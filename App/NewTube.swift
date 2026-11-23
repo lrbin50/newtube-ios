@@ -1,6 +1,7 @@
 import SwiftUI
 import AVKit
 import WebKit
+import UIKit
 
 @main struct NewTubeApp: App {
     @StateObject private var library: Library
@@ -35,50 +36,59 @@ struct RootView: View {
     @Environment(\.verticalSizeClass) private var height
 
     var body: some View {
-        TabView(selection: $selection) {
-            NavigationStack {
-                VStack(spacing: 0) {
-                    HStack {
-                        Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                        TextField("Search or paste a YouTube link", text: $query)
-                            .textInputAutocapitalization(.never).autocorrectionDisabled()
-                            .submitLabel(.search).onSubmit { browser.search(query) }
-                    }
-                    .padding(10).background(.quaternary, in: RoundedRectangle(cornerRadius: 10)).padding(.horizontal).padding(.bottom, 6)
-                    if let issue = browser.issue {
-                        ContentUnavailableView {
-                            Label("Unable to load YouTube", systemImage: "wifi.exclamationmark")
-                        } description: { Text(issue) } actions: {
-                            Button("Try again") {
+        let playerHeight: CGFloat = height == .compact ? 105 : width == .regular ? 260 : 190
+        ZStack(alignment: .bottom) {
+            TabView(selection: $selection) {
+                NavigationView {
+                    VStack(spacing: 0) {
+                        HStack {
+                            Image(systemName: "magnifyingglass").foregroundColor(.secondary)
+                            TextField("Search or paste a YouTube link", text: $query, onCommit: { browser.search(query) })
+                                .autocapitalization(.none).disableAutocorrection(true)
+                        }
+                        .padding(10)
+                        .background(RoundedRectangle(cornerRadius: 10).fill(Color.secondary.opacity(0.12)))
+                        .padding(.horizontal).padding(.bottom, 6)
+                        if let issue = browser.issue {
+                            EmptyStateView(
+                                title: "Unable to load YouTube",
+                                systemImage: "wifi.exclamationmark",
+                                description: Text(issue),
+                                buttonTitle: "Try again"
+                            ) {
                                 if browser.web.url != nil { browser.web.reload() } else { browser.load(path: "/") }
                             }
+                        } else { BrowseSurface(browser: browser) }
+                    }
+                    .navigationTitle("NewTube").navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .navigationBarLeading) {
+                            Button { browser.web.goBack() } label: {
+                                Label("Back", systemImage: "chevron.backward")
+                            }.disabled(!browser.canGoBack)
                         }
-                    } else { BrowseSurface(browser: browser) }
-                }
-                .navigationTitle("NewTube").navigationBarTitleDisplayMode(.inline)
-                .toolbar {
-                    ToolbarItem(placement: .topBarLeading) {
-                        Button("Back", systemImage: "chevron.backward") { browser.web.goBack() }.disabled(!browser.canGoBack)
-                    }
-                    ToolbarItem(placement: .topBarTrailing) {
-                        Menu {
-                            Button("Home") { browser.load(path: "/") }
-                            Button("Subscriptions") { browser.load(path: "/feed/subscriptions") }
-                            Button("YouTube library") { browser.load(path: "/feed/library") }
-                            Button("Reload") { browser.web.reload() }
-                        } label: { Label("Browse destinations", systemImage: "ellipsis.circle") }
+                        ToolbarItem(placement: .navigationBarTrailing) {
+                            Menu {
+                                Button("Home") { browser.load(path: "/") }
+                                Button("Subscriptions") { browser.load(path: "/feed/subscriptions") }
+                                Button("YouTube library") { browser.load(path: "/feed/library") }
+                                Button("Reload") { browser.web.reload() }
+                            } label: { Label("Browse destinations", systemImage: "ellipsis.circle") }
+                        }
                     }
                 }
-            }.tabItem { Label("Browse", systemImage: "play.rectangle.on.rectangle") }.tag(0)
-            LibraryView().tabItem { Label("Library", systemImage: "books.vertical") }.tag(1)
-            SettingsView().tabItem { Label("Settings", systemImage: "gearshape") }.tag(2)
-        }
-        .safeAreaInset(edge: .bottom, spacing: 0) {
+                .navigationViewStyle(StackNavigationViewStyle())
+                .tabItem { Label("Browse", systemImage: "play.rectangle.on.rectangle") }.tag(0)
+                LibraryView().tabItem { Label("Library", systemImage: "books.vertical") }.tag(1)
+                SettingsView().tabItem { Label("Settings", systemImage: "gearshape") }.tag(2)
+            }
+            .padding(.bottom, playback.current == nil ? 0 : playerHeight + 56)
             if let video = playback.current {
                 PlayerPanel(video: video, openWeb: {
                     playback.close()
                     webPlayer = video
-                }, playerHeight: height == .compact ? 105 : width == .regular ? 260 : 190)
+                }, playerHeight: playerHeight)
+                .padding(.bottom, 49)
             }
         }
         .onAppear {
@@ -86,9 +96,9 @@ struct RootView: View {
             if browser.web.url == nil && !browser.web.isLoading { browser.load(path: "/") }
         }
         .sheet(item: $webPlayer) { video in WebPlayer(url: video.watchURL).ignoresSafeArea() }
-        .alert("NewTube", isPresented: Binding(get: { playback.message != nil }, set: { if !$0 { playback.message = nil } })) {
-            Button("OK", role: .cancel) {}
-        } message: { Text(playback.message ?? "") }
+        .alert(isPresented: Binding(get: { playback.message != nil }, set: { if !$0 { playback.message = nil } })) {
+            Alert(title: Text("NewTube"), message: Text(playback.message ?? ""), dismissButton: .default(Text("OK")))
+        }
     }
 }
 
@@ -108,13 +118,15 @@ struct PlayerPanel: View {
                 HStack {
                     Button("Retry") { playback.open(video) }
                     Button("Use web player", action: openWeb)
-                }.buttonStyle(.bordered)
+                }
             }
             // Keep the AVKit controller attached while switching between compact and full controls.
             PlayerSurface(player: playback.player)
                 .frame(height: playback.expanded && playback.failure == nil ? playerHeight : 0)
                 .clipped().accessibilityHidden(!playback.expanded)
-                .overlay { if playback.resolving && playback.expanded { ProgressView().tint(.white) } }
+                .overlay(Group {
+                    if playback.resolving && playback.expanded { ProgressView().accentColor(.white) }
+                })
             HStack {
                 Button {
                     playback.expanded.toggle()
@@ -124,7 +136,7 @@ struct PlayerPanel: View {
                         VStack(alignment: .leading) {
                             Text(playback.communityTitle ?? video.title).font(.subheadline.bold()).lineLimit(2)
                             if let count = playback.dislikes {
-                                Text("\(count.formatted()) estimated dislikes").font(.caption2).foregroundStyle(.secondary)
+                                Text("\(count) estimated dislikes").font(.caption2).foregroundColor(.secondary)
                             }
                         }
                     }.frame(maxWidth: .infinity, alignment: .leading)
@@ -136,9 +148,11 @@ struct PlayerPanel: View {
                 Menu {
                     Button(library.saved.contains(where: { $0.id == video.id }) ? "Remove from Watch later" : "Watch later") { library.bookmark(video) }
                     if !playback.queue.isEmpty { Button("Play next (\(playback.queue.count) queued)") { playback.next() } }
-                    Menu(playback.downloading == nil ? "Download" : "Downloading…") {
+                    Menu {
                         Button("Video and audio") { playback.save(video, audioOnly: false) }
                         Button("Audio only") { playback.save(video, audioOnly: true) }
+                    } label: {
+                        Label(playback.downloading == nil ? "Download" : "Downloading…", systemImage: "arrow.down.circle")
                     }.disabled(playback.downloading != nil)
                     if let name = tv.name {
                         Button("Play on \(name)") {
@@ -151,11 +165,11 @@ struct PlayerPanel: View {
                         }
                     }
                     Button("Open YouTube player and comments", action: openWeb)
-                    ShareLink(item: video.watchURL)
-                    Button("Close player", role: .destructive) { playback.close() }
+                    ShareButton(url: video.watchURL)
+                    Button("Close player") { playback.close() }.foregroundColor(.red)
                 } label: { Label("Player actions", systemImage: "ellipsis.circle").labelStyle(.iconOnly) }
             }.padding(.horizontal).padding(.vertical, 6)
-        }.background(.regularMaterial)
+        }.background(Color.secondary.opacity(0.12))
     }
 }
 
@@ -172,45 +186,50 @@ struct LibraryView: View {
         }
     }
     var body: some View {
-        NavigationStack {
+        NavigationView {
             VStack {
                 Picker("Collection", selection: $category) {
                     ForEach(categories, id: \.self) { Text($0) }
                 }.pickerStyle(.segmented).padding(.horizontal)
                 if videos.isEmpty {
-                    ContentUnavailableView(category, systemImage: category == "Downloads" ? "arrow.down.circle" : "rectangle.stack",
+                    EmptyStateView(
+                        title: category,
+                        systemImage: category == "Downloads" ? "arrow.down.circle" : "rectangle.stack",
                         description: Text(category == "Downloads" ? "Download a video or its audio from the player menu to play it offline."
-                            : category == "History" ? "Videos you play appear here." : "Save videos using Watch later in the player menu."))
+                            : category == "History" ? "Videos you play appear here." : "Save videos using Watch later in the player menu.")
+                    )
                 } else {
                     List(videos) { video in
                         Button { playback.open(video) } label: {
                             HStack {
-                                AsyncImage(url: video.thumbnailURL) { image in image.resizable().scaledToFill() } placeholder: {
-                                    Image(systemName: "film").frame(maxWidth: .infinity, maxHeight: .infinity).background(.quaternary)
-                                }.frame(width: 90, height: 52).clipped().clipShape(RoundedRectangle(cornerRadius: 5))
-                                Text(video.title).lineLimit(3).foregroundStyle(.primary)
+                                RemoteThumbnail(url: video.thumbnailURL)
+                                    .frame(width: 90, height: 52).clipped().clipShape(RoundedRectangle(cornerRadius: 5))
+                                Text(video.title).lineLimit(3).foregroundColor(.primary)
                             }
                         }
                         .contextMenu {
                             Button("Add to queue") { playback.enqueue(video) }
                             Button(library.saved.contains(where: { $0.id == video.id }) ? "Remove from Watch later" : "Watch later") { library.bookmark(video) }
-                            ShareLink(item: video.watchURL)
-                            if category == "Downloads" { Button("Delete download", role: .destructive) {
+                            ShareButton(url: video.watchURL)
+                            if category == "Downloads" { Button("Delete download") {
                                 do { try library.removeDownload(video) } catch { playback.message = error.localizedDescription }
-                            } }
+                            }.foregroundColor(.red) }
                         }
                     }.listStyle(.plain)
                 }
             }.navigationTitle("Library")
             .toolbar {
                 if videos.count > 1 {
-                    Menu("Play collection", systemImage: "text.line.first.and.arrowtriangle.forward") {
+                    Menu {
                         Button("Play all") { play(videos) }
                         Button("Shuffle") { play(videos.shuffled()) }
+                    } label: {
+                        Label("Play collection", systemImage: "text.line.first.and.arrowtriangle.forward")
                     }
                 }
             }
         }
+        .navigationViewStyle(StackNavigationViewStyle())
     }
     private func play(_ items: [Video]) {
         playback.playCollection(items)

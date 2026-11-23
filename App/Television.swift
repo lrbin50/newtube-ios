@@ -40,7 +40,7 @@ import Combine
             request.httpBody = body.percentEncodedQuery?.replacingOccurrences(of: "+", with: "%2B").data(using: .utf8)
             request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
         }
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await LegacyNetwork.data(for: request)
         guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw MediaError.invalidResponse }
         return data
     }

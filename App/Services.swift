@@ -33,7 +33,7 @@ enum Media {
 
     static func download(_ video: Video, audioOnly: Bool) async throws -> URL {
         let address = try await source(video, audioOnly: audioOnly, download: true)
-        let (file, response) = try await URLSession.shared.download(from: address)
+        let (file, response) = try await LegacyNetwork.download(from: address)
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode),
               !(http.mimeType ?? "").hasPrefix("text/"),
               (try file.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0) > 0
@@ -53,7 +53,7 @@ enum Community {
     private static func get<T: Decodable>(_ type: T.Type, _ endpoint: String, query: [URLQueryItem]) async throws -> T {
         var components = URLComponents(string: endpoint)!
         components.queryItems = query
-        let (data, response) = try await URLSession.shared.data(from: components.url!)
+        let (data, response) = try await LegacyNetwork.data(from: components.url!)
         guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw MediaError.invalidResponse }
         return try JSONDecoder().decode(type, from: data)
     }

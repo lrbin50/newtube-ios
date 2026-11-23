@@ -225,7 +225,9 @@ struct PlayerSurface: UIViewControllerRepresentable {
         let view = AVPlayerViewController()
         view.player = player
         view.allowsPictureInPicturePlayback = true
-        view.canStartPictureInPictureAutomaticallyFromInline = true
+        if #available(iOS 14.2, *) {
+            view.canStartPictureInPictureAutomaticallyFromInline = true
+        }
         view.updatesNowPlayingInfoCenter = false
         return view
     }

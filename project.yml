@@ -2,7 +2,7 @@ name: NewTube
 options:
   bundleIdPrefix: io.github.toofpaste
   deploymentTarget:
-    iOS: "17.0"
+    iOS: "14.0"
 packages:
   YouTubeKit:
     url: https://github.com/alexeichhorn/YouTubeKit

@@ -13,26 +13,34 @@ struct SettingsView: View {
     @State private var confirmClear = false
 
     var body: some View {
-        NavigationStack {
+        NavigationView {
             Form {
-                Section("Playback") {
+                Section(header: Text("Playback")) {
                     Picker("Default speed", selection: $speed) {
                         ForEach([0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2], id: \.self) { value in
-                            Text("\(value.formatted())×").tag(value)
+                            Text("\(value, specifier: "%g")×").tag(value)
                         }
                     }
                 }
-                Section {
+                Section(
+                    header: Text("Community services"),
+                    footer: Text("Enabled services receive the current video ID. SponsorBlock supplies segments, DeArrow supplies titles, and Return YouTube Dislike supplies counts.")
+                ) {
                     Toggle("Skip sponsors and self-promotion", isOn: $skip)
                     Toggle("Show DeArrow titles", isOn: $titles)
                     Toggle("Show estimated dislikes", isOn: $votes)
-                } header: { Text("Community services") } footer: {
-                    Text("Enabled services receive the current video ID. SponsorBlock supplies segments, DeArrow supplies titles, and Return YouTube Dislike supplies counts.")
                 }
-                Section {
+                Section(
+                    header: Text("Play on TV"),
+                    footer: Text("Find the pairing code in SmartTube or YouTube on your TV. After pairing, select your TV in the player menu.")
+                ) {
                     if let name = tv.name {
-                        LabeledContent("Paired TV", value: name)
-                        Button("Forget TV", role: .destructive) { tv.forget() }
+                        HStack {
+                            Text("Paired TV")
+                            Spacer()
+                            Text(name).foregroundColor(.secondary)
+                        }
+                        Button("Forget TV") { tv.forget() }.foregroundColor(.red)
                     } else {
                         TextField("12-digit TV code", text: $code).keyboardType(.numberPad)
                         Button(pairing ? "Pairing…" : "Pair TV") {
@@ -44,13 +52,11 @@ struct SettingsView: View {
                             }
                         }.disabled(pairing || code.filter(\.isNumber).count != 12)
                     }
-                } header: { Text("Play on TV") } footer: {
-                    Text("Find the pairing code in SmartTube or YouTube on your TV. After pairing, select your TV in the player menu.")
                 }
-                Section("Library") {
-                    Button("Clear local watch history", role: .destructive) { confirmClear = true }
+                Section(header: Text("Library")) {
+                    Button("Clear local watch history") { confirmClear = true }.foregroundColor(.red)
                 }
-                Section("About") {
+                Section(header: Text("About")) {
                     Link("NewTube for iOS", destination: URL(string: "https://github.com/toofpaste/newtube-ios")!)
                     Link("Original Android app", destination: URL(string: "https://github.com/aleixrodriala/newtube")!)
                     NavigationLink("Credits and licenses") {
@@ -59,7 +65,7 @@ struct SettingsView: View {
                                 ForEach(["Credits", "NewTube", "YouTubeKit"], id: \.self) { name in
                                     if let file = Bundle.main.url(forResource: name, withExtension: "txt"),
                                        let contents = try? String(contentsOf: file, encoding: .utf8) {
-                                        Text(contents).font(.footnote).textSelection(.enabled)
+                                        Text(contents).font(.footnote)
                                     }
                                 }
                             }.padding()
@@ -71,9 +77,16 @@ struct SettingsView: View {
             .onChange(of: skip) { playback.refreshCommunity() }
             .onChange(of: titles) { playback.refreshCommunity() }
             .onChange(of: votes) { playback.refreshCommunity() }
-            .confirmationDialog("Clear watch history and resume positions on this device?", isPresented: $confirmClear) {
-                Button("Clear history", role: .destructive) { library.clearHistory() }
+            .actionSheet(isPresented: $confirmClear) {
+                ActionSheet(
+                    title: Text("Clear watch history and resume positions on this device?"),
+                    buttons: [
+                        .destructive(Text("Clear history")) { library.clearHistory() },
+                        .cancel()
+                    ]
+                )
             }
         }
+        .navigationViewStyle(StackNavigationViewStyle())
     }
 }
