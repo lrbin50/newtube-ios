@@ -1,0 +1,12 @@
+NewTube for iOS is an independent port of Aleix Rodriala’s NewTube for Android, based on yuliskov’s SmartTube. The NewTube icon comes from the Android project. Neither project, Google nor YouTube endorses this port.
+
+Android source https://github.com/aleixrodriala/newtube
+SmartTube https://github.com/yuliskov/SmartTube
+YouTubeKit https://github.com/alexeichhorn/YouTubeKit
+
+SponsorBlock segments and DeArrow titles are © their respective contributors and licensed under CC BY-NC-SA 4.0 (https://creativecommons.org/licenses/by-nc-sa/4.0/). This free, non-commercial app reads the services on demand.
+https://sponsor.ajay.app
+https://dearrow.ajay.app
+
+Estimated dislike counts are provided by Return YouTube Dislike.
+https://returnyoutubedislike.com

@@ -1,0 +1,48 @@
+name: Build and release unsigned iOS app
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install project generator
+        run: command -v xcodegen >/dev/null || brew install xcodegen
+      - name: Build and verify unsigned device IPA
+        run: bash scripts/build-unsigned.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: unsigned-device-build
+          path: build/release/
+          if-no-files-found: error
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: unsigned-device-build
+          path: release
+      - name: Publish verified IPA and checksum
+        working-directory: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ios-build-${{ github.run_number }}-${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          sha256sum --check SHA256SUMS.txt
+          gh release create "$TAG" NewTube-unsigned.ipa SHA256SUMS.txt \
+            --target "$GITHUB_SHA" --title "NewTube for iOS · Build $GITHUB_RUN_NUMBER" \
+            --notes "Unsigned iPhone and iPad build from commit $GITHUB_SHA. Sign the IPA before installing it on a device."
