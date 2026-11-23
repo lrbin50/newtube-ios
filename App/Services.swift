@@ -62,7 +62,16 @@ enum Community {
         let items = try? await get([Segment].self, "https://sponsor.ajay.app/api/skipSegments", query: [
             .init(name: "videoID", value: id), .init(name: "categories", value: "[\"sponsor\",\"selfpromo\"]")
         ])
-        return items?.map(\.segment).filter { $0.count == 2 && $0[0] >= 0 && $0[1] > $0[0] } ?? []
+        guard let items else { return [] }
+        var ranges: [[Double]] = []
+        for item in items {
+            let range = item.segment
+            guard range.count == 2 else { continue }
+            let start = range[0]
+            let end = range[1]
+            if start >= 0 && end > start { ranges.append(range) }
+        }
+        return ranges
     }
 
     static func title(_ id: String) async -> String? {
