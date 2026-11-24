@@ -56,7 +56,8 @@ struct RootView: View {
 }
 
 /// Native home built on InnerTube instead of the YouTube web shell.
-/// Shows the signed-in recommendation feed, subscriptions and search results.
+/// Immersive, edge-to-edge two-column grid (portrait) like the YouTube app,
+/// with a floating translucent search bar and no native title bar.
 struct BrowseView: View {
     @EnvironmentObject var playback: Playback
     @ObservedObject private var account = Account.shared
@@ -64,69 +65,70 @@ struct BrowseView: View {
     @State private var query = ""
     @State private var showSignIn = false
 
-    private var isSearching: Bool {
-        if case .search = feed.mode { return true }
-        return false
-    }
-
     var body: some View {
-        NavigationView {
-            Group {
-                if !account.isSignedIn {
-                    SignInView(onSignIn: { showSignIn = true })
-                } else {
-                    feedContent
-                }
-            }
-            .navigationTitle(title)
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Menu {
-                        Button { Task { await feed.load(.home) } } label: { Label("Home", systemImage: "house") }
-                        Button { Task { await feed.load(.subscriptions) } } label: { Label("Subscriptions", systemImage: "rectangle.stack") }
-                        Button { showSignIn = true } label: { Label("Account", systemImage: "person.circle") }
-                    } label: {
-                        Image(systemName: "ellipsis.circle")
+        GeometryReader { geo in
+            // Two columns in portrait, more in landscape — mirrors the phone app.
+            let columns = geo.size.width > 700 ? 4 : 2
+            ZStack(alignment: .top) {
+                Group {
+                    if !account.isSignedIn {
+                        SignInView(onSignIn: { showSignIn = true })
+                    } else {
+                        feedContent(columns: columns)
                     }
+                }
+
+                // Floating, translucent search + menu bar over the content.
+                if account.isSignedIn {
+                    HStack(spacing: 8) {
+                        HStack(spacing: 6) {
+                            Image(systemName: "magnifyingglass").foregroundColor(.secondary)
+                            TextField("Search YouTube", text: $query, onCommit: submitSearch)
+                                .autocapitalization(.none).disableAutocorrection(true)
+                            if !query.isEmpty {
+                                Button { query = "" } label: {
+                                    Image(systemName: "xmark.circle.fill").foregroundColor(.secondary)
+                                }
+                            }
+                        }
+                        .padding(.horizontal, 12).padding(.vertical, 9)
+                        .background(
+                            RoundedRectangle(cornerRadius: 12)
+                                .fill(Color(UIColor.systemBackground).opacity(0.92))
+                        )
+                        Menu {
+                            Button { Task { await feed.load(.home) } } label: { Label("Home", systemImage: "house") }
+                            Button { Task { await feed.load(.subscriptions) } } label: { Label("Subscriptions", systemImage: "rectangle.stack") }
+                            Button { showSignIn = true } label: { Label("Account", systemImage: "person.circle") }
+                        } label: {
+                            Image(systemName: "ellipsis.circle.fill")
+                                .font(.system(size: 26))
+                                .foregroundColor(.primary)
+                                .background(
+                                    Circle().fill(Color(UIColor.systemBackground).opacity(0.92))
+                                )
+                        }
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.top, 6)
                 }
             }
         }
-        .navigationViewStyle(StackNavigationViewStyle())
+        .navigationBarHidden(true)
         .sheet(isPresented: $showSignIn) { SignInSheet() }
         .onAppear {
             if account.isSignedIn, feed.videos.isEmpty { Task { await feed.load(.home) } }
         }
     }
 
-    private var title: String {
-        switch feed.mode {
-        case .home: return "Home"
-        case .subscriptions: return "Subscriptions"
-        case .search(let q): return q
-        }
-    }
-
-    private var feedContent: some View {
-        VStack(spacing: 0) {
-            // Search field
-            HStack {
-                Image(systemName: "magnifyingglass").foregroundColor(.secondary)
-                TextField("Search YouTube", text: $query, onCommit: submitSearch)
-                    .autocapitalization(.none).disableAutocorrection(true)
-                if !query.isEmpty {
-                    Button { query = "" } label: { Image(systemName: "xmark.circle.fill").foregroundColor(.secondary) }
-                }
-            }
-            .padding(10)
-            .background(Color.secondary.opacity(0.12))
-            .cornerRadius(10)
-            .padding(.horizontal, 12).padding(.vertical, 6)
-
+    private func feedContent(columns: Int) -> some View {
+        Group {
             if feed.loading && feed.videos.isEmpty {
-                Spacer()
-                ProgressView("Loading…")
-                Spacer()
+                VStack {
+                    Spacer()
+                    ProgressView("Loading…")
+                    Spacer()
+                }
             } else if let message = feed.message, feed.videos.isEmpty {
                 EmptyStateView(title: message, systemImage: "exclamationmark.triangle",
                                description: Text("Try signing in again from the Account menu."),
@@ -135,18 +137,26 @@ struct BrowseView: View {
                 }
             } else {
                 ScrollView {
-                    LazyVGrid(columns: [GridItem(.flexible())], spacing: 16) {
+                    LazyVGrid(
+                        columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: columns),
+                        spacing: 16
+                    ) {
                         ForEach(feed.videos) { video in
                             Button { playback.open(video.video) } label: {
                                 FeedCard(video: video)
                             }
                             .buttonStyle(.plain)
                             .onAppear {
+                                // Warm the direct stream a few cards ahead so
+                                // tapping a video starts playback immediately.
+                                FastMedia.prewarm(video.id)
                                 if video == feed.videos.last { Task { await feed.loadMore() } }
                             }
                         }
                     }
-                    .padding(.horizontal, 12)
+                    .padding(.horizontal, 10)
+                    // Leave room for the floating search bar.
+                    .padding(.top, 62)
                     if feed.loading { ProgressView().padding() }
                 }
             }
@@ -167,25 +177,24 @@ struct BrowseView: View {
 struct FeedCard: View {
     let video: FeedVideo
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 5) {
             ZStack(alignment: .bottomTrailing) {
                 RemoteThumbnail(url: video.thumbnailURL)
                     .frame(maxWidth: .infinity)
                     .aspectRatio(16 / 9, contentMode: .fit)
-                    .clipped().cornerRadius(8)
+                    .clipped().cornerRadius(6)
                 if let duration = video.duration {
                     Text(duration).font(.caption2).foregroundColor(.white)
-                        .padding(.horizontal, 5).padding(.vertical, 2)
-                        .background(Color.black.opacity(0.75)).cornerRadius(3)
-                        .padding(6)
+                        .padding(.horizontal, 4).padding(.vertical, 1)
+                        .background(Color.black.opacity(0.8)).cornerRadius(3)
+                        .padding(5)
                 }
             }
             Text(video.title).font(.subheadline).foregroundColor(.primary)
                 .lineLimit(2).multilineTextAlignment(.leading)
-            HStack(spacing: 4) {
+            HStack(spacing: 3) {
                 if let channel = video.channel { Text(channel) }
                 if let views = video.views { Text("· \(views)") }
-                if let date = video.published { Text("· \(date)") }
             }
             .font(.caption).foregroundColor(.secondary).lineLimit(1)
         }
