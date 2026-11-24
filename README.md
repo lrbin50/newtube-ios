@@ -18,11 +18,11 @@ Grab `NewTube-unsigned.ipa` from [Releases](https://github.com/lrbin50/newtube-i
 
 ## Building
 
-**Important:** Xcode 26 and newer can only target iOS 15+. To produce an iOS 14 build you must use **Xcode 15** on macOS 13/14.
+**Important:** Xcode 26 and newer can only target iOS 15+. Use **Xcode 16** (macOS 14.5+) or **Xcode 15** (macOS 13/14) to produce an iOS 14 build. Do not build with Xcode 26+.
 
-On macOS with Xcode 15 and XcodeGen installed, run `bash scripts/build-unsigned.sh`. The device IPA and checksum are written to `build/release/`. To run on a simulator, generate the project with `xcodegen generate`, open `NewTube.xcodeproj`, and select the NewTube scheme and an iPhone or iPad simulator.
+On macOS with Xcode 16 or 15 and XcodeGen installed, run `bash scripts/build-unsigned.sh`. The device IPA and checksum are written to `build/release/`. To run on a simulator, generate the project with `xcodegen generate`, open `NewTube.xcodeproj`, and select the NewTube scheme and an iPhone or iPad simulator.
 
-Every push to main and manual Actions dispatch builds the Release configuration for a generic iOS device using a `macos-13` runner with Xcode 15. CI checks the arm64 executable, target platform, resources, unsigned state and archive integrity before publishing the IPA and SHA-256 checksum to a GitHub Release.
+Every push to main and manual Actions dispatch builds the Release configuration for a generic iOS device using a `macos-15` runner with Xcode 16.4. CI checks the arm64 executable, target platform, resources, unsigned state and archive integrity before publishing the IPA and SHA-256 checksum to a GitHub Release.
 
 ## iOS 14 changes
 

@@ -9,15 +9,15 @@ permissions:
 
 jobs:
   build:
-    runs-on: macos-13
+    runs-on: macos-15
     timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - name: Select Xcode 15 (last toolchain supporting iOS 14 deployment)
+      - name: Select Xcode 16.4 (still supports iOS 14 deployment target)
         run: |
-          sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+          sudo xcode-select -s /Applications/Xcode_16.4.app/Contents/Developer
           xcodebuild -version
       - name: Install project generator
         run: command -v xcodegen >/dev/null || brew install xcodegen
