@@ -58,9 +58,15 @@ enum AccountError: LocalizedError {
     private let tokenURL = "https://www.youtube.com/o/oauth2/token"
     private let scope = "http://gdata.youtube.com https://www.googleapis.com/auth/youtube-paid-content"
 
+    // A TV user-agent is REQUIRED: with a desktop/default UA, youtube.com/tv
+    // serves a short "you are being redirected" stub with no base-js, so the
+    // dynamic credential scrape fails and we fall back to a stale secret.
+    private let tvUserAgent = "Mozilla/5.0 (SMART-TV; LINUX; Tizen 6.0) AppleWebKit/537.36 (KHTML, like Gecko) Version/6.0 TV Safari/537.36"
+
     // Fallback public TV client credentials (used if dynamic fetch fails).
+    // These are the live values from youtube.com/tv's base.js; keep in sync.
     private let fallbackId = "861556708454-d6dlm3lh05idd8npek18k6be8ba3oc68.apps.googleusercontent.com"
-    private let fallbackSecret = "SboVhoG9s0rNafixGGCF1X7"
+    private let fallbackSecret = "SboVhoG9s0rNafixCSGGKXAT"
 
     init() {
         tokens = load()
@@ -126,6 +132,13 @@ enum AccountError: LocalizedError {
             case "slow_down": interval += 5
             case "expired_token": throw AccountError.expired
             case "access_denied": throw AccountError.denied("Access denied")
+            case "invalid_client":
+                // Stale client secret: surfacing this beats spinning until the
+                // 20-minute deadline with no explanation to the user.
+                throw AccountError.denied(
+                    json["error_description"] as? String
+                        ?? "Sign-in credentials rejected. Please update the app."
+                )
             default: break  // authorization_pending and transient errors
             }
         }
@@ -185,18 +198,27 @@ enum AccountError: LocalizedError {
     }
 
     /// Reads client id/secret from YouTube's TV page JS, with fallback.
+    /// A TV UA is mandatory: otherwise the page is a redirect stub with no JS.
     private func fetchCredentials() async -> (String, String) {
         guard let tv = URL(string: "https://www.youtube.com/tv"),
-              let (htmlData, _) = try? await LegacyNetwork.data(from: tv),
+              let htmlData = try? await getWithTVUA(tv),
               let html = String(data: htmlData, encoding: .utf8),
               let src = match(#"<script\s+id="base-js"\s+src="([^"]+)""#, in: html, group: 1),
               let jsURL = URL(string: src.hasPrefix("http") ? src : "https://www.youtube.com\(src)"),
-              let (jsData, _) = try? await LegacyNetwork.data(from: jsURL),
+              let jsData = try? await getWithTVUA(jsURL),
               let js = String(data: jsData, encoding: .utf8),
               let id = match(#"clientId:"([^"]+)""#, in: js, group: 1),
               let secret = match(#"clientId:"[^"]+",\s*\w+:"([^"]+)""#, in: js, group: 1)
         else { return (fallbackId, fallbackSecret) }
         return (id, secret)
+    }
+
+    private func getWithTVUA(_ url: URL) async throws -> Data {
+        var request = URLRequest(url: url)
+        request.setValue(tvUserAgent, forHTTPHeaderField: "User-Agent")
+        request.setValue("en-US", forHTTPHeaderField: "Accept-Language")
+        let (data, _) = try await LegacyNetwork.data(for: request)
+        return data
     }
 
     private nonisolated func match(_ pattern: String, in string: String, group: Int) -> String? {
