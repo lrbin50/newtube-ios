@@ -29,147 +29,166 @@ struct RootView: View {
     @EnvironmentObject var library: Library
     @EnvironmentObject var playback: Playback
     @EnvironmentObject var browser: Browser
-    @State private var query = ""
+    @EnvironmentObject var tv: Television
     @State private var selection = 0
-    @State private var webPlayer: Video?
-    @Environment(\.horizontalSizeClass) private var width
-    @Environment(\.verticalSizeClass) private var height
 
     var body: some View {
-        let playerHeight: CGFloat = height == .compact ? 105 : width == .regular ? 260 : 190
-        ZStack(alignment: .bottom) {
-            TabView(selection: $selection) {
-                NavigationView {
-                    VStack(spacing: 0) {
-                        HStack {
-                            Image(systemName: "magnifyingglass").foregroundColor(.secondary)
-                            TextField("Search or paste a YouTube link", text: $query, onCommit: { browser.search(query) })
-                                .autocapitalization(.none).disableAutocorrection(true)
-                        }
-                        .padding(10)
-                        .background(RoundedRectangle(cornerRadius: 10).fill(Color.secondary.opacity(0.12)))
-                        .padding(.horizontal).padding(.bottom, 6)
-                        if let issue = browser.issue {
-                            EmptyStateView(
-                                title: "Unable to load YouTube",
-                                systemImage: "wifi.exclamationmark",
-                                description: Text(issue),
-                                buttonTitle: "Try again"
-                            ) {
-                                if browser.web.url != nil { browser.web.reload() } else { browser.load(path: "/") }
-                            }
-                        } else { BrowseSurface(browser: browser) }
-                    }
-                    .navigationTitle("NewTube").navigationBarTitleDisplayMode(.inline)
-                    .toolbar {
-                        ToolbarItem(placement: .navigationBarLeading) {
-                            Button { browser.web.goBack() } label: {
-                                Label("Back", systemImage: "chevron.backward")
-                            }.disabled(!browser.canGoBack)
-                        }
-                        ToolbarItem(placement: .navigationBarTrailing) {
-                            Menu {
-                                Button("Home") { browser.load(path: "/") }
-                                Button("Subscriptions") { browser.load(path: "/feed/subscriptions") }
-                                Button("YouTube library") { browser.load(path: "/feed/library") }
-                                Button("Reload") { browser.web.reload() }
-                            } label: { Label("Browse destinations", systemImage: "ellipsis.circle") }
-                        }
-                    }
-                }
-                .navigationViewStyle(StackNavigationViewStyle())
-                .tabItem { Label("Browse", systemImage: "play.rectangle.on.rectangle") }.tag(0)
-                LibraryView().tabItem { Label("Library", systemImage: "books.vertical") }.tag(1)
-                SettingsView().tabItem { Label("Settings", systemImage: "gearshape") }.tag(2)
-            }
-            .padding(.bottom, playback.current == nil ? 0 : playerHeight + 56)
-            if let video = playback.current {
-                PlayerPanel(video: video, openWeb: {
-                    playback.close()
-                    webPlayer = video
-                }, playerHeight: playerHeight)
-                .padding(.bottom, 49)
-            }
+        TabView(selection: $selection) {
+            BrowseView().tabItem { Label("Browse", systemImage: "play.rectangle.on.rectangle") }.tag(0)
+            LibraryView().tabItem { Label("Library", systemImage: "books.vertical") }.tag(1)
+            SettingsView().tabItem { Label("Settings", systemImage: "gearshape") }.tag(2)
         }
         .onAppear {
             browser.play = { playback.open($0) }
             if browser.web.url == nil && !browser.web.isLoading { browser.load(path: "/") }
         }
-        .sheet(item: $webPlayer) { video in WebPlayer(url: video.watchURL).ignoresSafeArea() }
+        // Any video being opened (from the web view or the Library tab) takes over
+        // the whole screen instead of the old bottom third panel.
+        .fullScreenCover(item: Binding(get: { playback.current }, set: { _ in })) { video in
+            FullScreenPlayerView(video: video)
+                .environmentObject(library)
+                .environmentObject(playback)
+                .environmentObject(tv)
+        }
         .alert(isPresented: Binding(get: { playback.message != nil }, set: { if !$0 { playback.message = nil } })) {
             Alert(title: Text("NewTube"), message: Text(playback.message ?? ""), dismissButton: .default(Text("OK")))
         }
     }
 }
 
-struct PlayerPanel: View {
+/// Immersive browser: the YouTube mobile site fills the whole tab, with no app
+/// title bar or duplicate search field. Navigation is available from a small
+/// translucent floating menu, so the page itself stays untouched.
+struct BrowseView: View {
+    @EnvironmentObject var browser: Browser
+
+    var body: some View {
+        ZStack(alignment: .bottomTrailing) {
+            Group {
+                if let issue = browser.issue {
+                    EmptyStateView(
+                        title: "Unable to load YouTube",
+                        systemImage: "wifi.exclamationmark",
+                        description: Text(issue),
+                        buttonTitle: "Try again"
+                    ) {
+                        if browser.web.url != nil { browser.web.reload() } else { browser.load(path: "/") }
+                    }
+                } else {
+                    BrowseSurface(browser: browser).edgesIgnoringSafeArea(.all)
+                }
+            }
+            Menu {
+                Button { browser.web.goBack() } label: { Label("Back", systemImage: "chevron.backward") }
+                    .disabled(!browser.canGoBack)
+                Button { browser.load(path: "/") } label: { Label("Home", systemImage: "house") }
+                Button { browser.load(path: "/feed/subscriptions") } label: { Label("Subscriptions", systemImage: "rectangle.stack") }
+                Button { browser.load(path: "/feed/library") } label: { Label("YouTube library", systemImage: "folder") }
+                Button { browser.web.reload() } label: { Label("Reload", systemImage: "arrow.clockwise") }
+                if let url = browser.web.url {
+                    Button { UIApplication.shared.open(url) } label: { Label("Open in Safari", systemImage: "safari") }
+                }
+            } label: {
+                Image(systemName: "ellipsis.circle.fill")
+                    .font(.system(size: 26))
+                    .foregroundColor(.primary)
+                    .padding(7)
+                    .background(Circle().fill(Color(UIColor.systemBackground).opacity(0.8)))
+            }
+            .padding()
+        }
+    }
+}
+
+/// Full-screen playback page. AVKit supplies the player controls, Picture in
+/// Picture and AirPlay; the bars around it provide NewTube specific actions.
+struct FullScreenPlayerView: View {
     @EnvironmentObject var playback: Playback
     @EnvironmentObject var library: Library
     @EnvironmentObject var tv: Television
+    @State private var webPlayer: Video?
     let video: Video
-    let openWeb: () -> Void
-    let playerHeight: CGFloat
 
     var body: some View {
-        VStack(spacing: 4) {
-            Divider()
-            if playback.expanded, let failure = playback.failure {
-                Text(failure).font(.caption).lineLimit(3).padding(.horizontal)
-                HStack {
-                    Button("Retry") { playback.open(video) }
-                    Button("Use web player", action: openWeb)
-                }
-            }
-            // Keep the AVKit controller attached while switching between compact and full controls.
-            PlayerSurface(player: playback.player)
-                .frame(height: playback.expanded && playback.failure == nil ? playerHeight : 0)
-                .clipped().accessibilityHidden(!playback.expanded)
-                .overlay(Group {
-                    if playback.resolving && playback.expanded { ProgressView().accentColor(.white) }
-                })
-            HStack {
-                Button {
-                    playback.expanded.toggle()
-                } label: {
-                    HStack {
-                        Image(systemName: playback.expanded ? "chevron.down" : "chevron.up")
-                        VStack(alignment: .leading) {
-                            Text(playback.communityTitle ?? video.title).font(.subheadline.bold()).lineLimit(2)
-                            if let count = playback.dislikes {
-                                Text("\(count) estimated dislikes").font(.caption2).foregroundColor(.secondary)
-                            }
-                        }
-                    }.frame(maxWidth: .infinity, alignment: .leading)
-                }.accessibilityLabel("Toggle player, \(video.title)")
-                if !playback.expanded {
-                    Button(playback.playing ? "Pause" : "Play", systemImage: playback.playing ? "pause.fill" : "play.fill") { playback.toggle() }
-                    .labelStyle(.iconOnly)
-                }
-                Menu {
-                    Button(library.saved.contains(where: { $0.id == video.id }) ? "Remove from Watch later" : "Watch later") { library.bookmark(video) }
-                    if !playback.queue.isEmpty { Button("Play next (\(playback.queue.count) queued)") { playback.next() } }
+        ZStack {
+            Color.black.edgesIgnoringSafeArea(.all)
+            VStack(spacing: 0) {
+                HStack(spacing: 12) {
+                    Button { playback.close() } label: {
+                        Image(systemName: "chevron.down").font(.system(size: 20, weight: .semibold))
+                    }
+                    Text(playback.communityTitle ?? video.title)
+                        .font(.headline).lineLimit(1).frame(maxWidth: .infinity)
                     Menu {
-                        Button("Video and audio") { playback.save(video, audioOnly: false) }
-                        Button("Audio only") { playback.save(video, audioOnly: true) }
+                        Button(library.saved.contains(where: { $0.id == video.id }) ? "Remove from Watch later" : "Watch later") {
+                            library.bookmark(video)
+                        }
+                        Button("Download video") { playback.save(video, audioOnly: false) }
+                        Button("Download audio") { playback.save(video, audioOnly: true) }
+                        if let name = tv.name {
+                            Button("Play on \(name)", action: cast)
+                        }
+                        Button("Open in YouTube", action: openWeb)
+                        ShareButton(url: video.watchURL)
                     } label: {
-                        Label(playback.downloading == nil ? "Download" : "Downloading…", systemImage: "arrow.down.circle")
-                    }.disabled(playback.downloading != nil)
-                    if let name = tv.name {
-                        Button("Play on \(name)") {
-                            Task {
-                                do {
-                                    try await tv.cast(video, queue: playback.queue, position: playback.player.currentTime().seconds)
-                                    if playback.current?.id == video.id { playback.player.pause() }
-                                } catch { playback.message = "Could not send to TV. " + error.localizedDescription }
-                            }
+                        Image(systemName: "ellipsis.circle").font(.system(size: 20))
+                    }
+                }
+                .padding(.horizontal).padding(.vertical, 10)
+                .foregroundColor(.white)
+
+                ZStack {
+                    PlayerSurface(player: playback.player)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    if playback.resolving {
+                        ProgressView().accentColor(.white)
+                    }
+                }
+
+                if let failure = playback.failure {
+                    VStack(spacing: 8) {
+                        Text(failure).font(.caption).lineLimit(3)
+                            .foregroundColor(.white).multilineTextAlignment(.center)
+                        HStack {
+                            Button("Retry") { playback.open(video) }
+                            Button("Use web player", action: openWeb)
+                        }.accentColor(.white)
+                    }.padding()
+                }
+
+                HStack(alignment: .top) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(playback.communityTitle ?? video.title)
+                            .font(.subheadline).foregroundColor(.white).lineLimit(2)
+                        if let count = playback.dislikes {
+                            Text("\(count) estimated dislikes").font(.caption2).foregroundColor(.gray)
                         }
                     }
-                    Button("Open YouTube player and comments", action: openWeb)
-                    ShareButton(url: video.watchURL)
-                    Button("Close player") { playback.close() }.foregroundColor(.red)
-                } label: { Label("Player actions", systemImage: "ellipsis.circle").labelStyle(.iconOnly) }
-            }.padding(.horizontal).padding(.vertical, 6)
-        }.background(Color.secondary.opacity(0.12))
+                    Spacer()
+                    if !playback.queue.isEmpty {
+                        Button("Next (\(playback.queue.count))") { playback.next() }
+                    }
+                }
+                .padding()
+            }
+        }
+        .sheet(item: $webPlayer) { video in WebPlayer(url: video.watchURL).ignoresSafeArea() }
+    }
+
+    private func openWeb() {
+        playback.player.pause()
+        webPlayer = video
+    }
+
+    private func cast() {
+        Task {
+            do {
+                try await tv.cast(video, queue: playback.queue, position: playback.player.currentTime().seconds)
+                if playback.current?.id == video.id { playback.player.pause() }
+            } catch {
+                playback.message = "Could not send to TV. " + error.localizedDescription
+            }
+        }
     }
 }
 
