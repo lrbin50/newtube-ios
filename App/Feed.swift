@@ -54,6 +54,7 @@ enum FeedError: LocalizedError {
 
     @Published private(set) var videos: [FeedVideo] = []
     @Published private(set) var loading = false
+    @Published private(set) var loadingMore = false
     @Published private(set) var message: String?
     @Published private(set) var mode: FeedMode = .home
 
@@ -80,8 +81,10 @@ enum FeedError: LocalizedError {
     }
 
     func loadMore() async {
-        guard let token = try? await Account.shared.validToken(),
-              let cont = continuation else { return }
+        guard !loadingMore, let cont = continuation else { return }
+        loadingMore = true
+        defer { loadingMore = false }
+        guard let token = try? await Account.shared.validToken() else { return }
         guard let page = try? await request(token: token, continuation: cont) else { return }
         merge(page)
     }
@@ -184,25 +187,31 @@ enum FeedError: LocalizedError {
     static func parse(_ json: [String: Any]) -> FeedPage {
         var found: [FeedVideo] = []
         var seen = Set<String>()
-        var cont: String?
-        walk(json, into: &found, seen: &seen, continuation: &cont)
+        var tokens: [String] = []
+        walk(json, into: &found, seen: &seen, tokens: &tokens)
+        // YouTube carries continuation tokens in several shapes depending on
+        // client/rollout. The main feed's token is typically the longest one.
+        let cont = tokens.filter { $0.count > 40 }.max { $0.count < $1.count }
         return FeedPage(videos: found, continuation: cont)
     }
 
     private static func walk(_ value: Any, into result: inout [FeedVideo],
-                             seen: inout Set<String>, continuation: inout String?) {
+                             seen: inout Set<String>, tokens: inout [String]) {
         if let dict = value as? [String: Any] {
             if let video = video(from: dict), seen.insert(video.id).inserted {
                 result.append(video)
             }
-            if continuation == nil,
-               let cmd = dict["continuationCommand"] as? [String: Any],
-               let token = cmd["token"] as? String, !token.isEmpty {
-                continuation = token
+            // Collect every known continuation shape; parse() picks the main one.
+            if let cmd = dict["continuationCommand"] as? [String: Any],
+               let token = cmd["token"] as? String { tokens.append(token) }
+            if let token = dict["continuation"] as? String { tokens.append(token) }
+            for key in ["nextContinuationData", "reloadContinuationData"] {
+                if let data = dict[key] as? [String: Any],
+                   let token = data["continuation"] as? String { tokens.append(token) }
             }
-            for item in dict.values { walk(item, into: &result, seen: &seen, continuation: &continuation) }
+            for item in dict.values { walk(item, into: &result, seen: &seen, tokens: &tokens) }
         } else if let array = value as? [Any] {
-            for item in array { walk(item, into: &result, seen: &seen, continuation: &continuation) }
+            for item in array { walk(item, into: &result, seen: &seen, tokens: &tokens) }
         }
     }
 
