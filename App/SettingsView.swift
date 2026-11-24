@@ -73,10 +73,10 @@ struct SettingsView: View {
                     }
                 }
             }.navigationTitle("Settings")
-            .onChange(of: speed) { if playback.playing { playback.resume() } }
-            .onChange(of: skip) { playback.refreshCommunity() }
-            .onChange(of: titles) { playback.refreshCommunity() }
-            .onChange(of: votes) { playback.refreshCommunity() }
+            .onChange(of: speed) { _ in if playback.playing { playback.resume() } }
+            .onChange(of: skip) { _ in playback.refreshCommunity() }
+            .onChange(of: titles) { _ in playback.refreshCommunity() }
+            .onChange(of: votes) { _ in playback.refreshCommunity() }
             .actionSheet(isPresented: $confirmClear) {
                 ActionSheet(
                     title: Text("Clear watch history and resume positions on this device?"),
