@@ -40,7 +40,6 @@ struct RootView: View {
         }
         .onAppear {
             browser.play = { playback.open($0) }
-            if browser.web.url == nil && !browser.web.isLoading { browser.load(path: "/") }
         }
         // Any video being opened (from the web view or the Library tab) takes over
         // the whole screen instead of the old bottom third panel.
@@ -56,46 +55,225 @@ struct RootView: View {
     }
 }
 
-/// Immersive browser: the YouTube mobile site fills the whole tab, with no app
-/// title bar or duplicate search field. Navigation is available from a small
-/// translucent floating menu, so the page itself stays untouched.
+/// Native home built on InnerTube instead of the YouTube web shell.
+/// Shows the signed-in recommendation feed, subscriptions and search results.
 struct BrowseView: View {
-    @EnvironmentObject var browser: Browser
+    @EnvironmentObject var playback: Playback
+    @ObservedObject private var account = Account.shared
+    @ObservedObject private var feed = Feed.shared
+    @State private var query = ""
+    @State private var showSignIn = false
+
+    private var isSearching: Bool {
+        if case .search = feed.mode { return true }
+        return false
+    }
 
     var body: some View {
-        ZStack(alignment: .bottomTrailing) {
+        NavigationView {
             Group {
-                if let issue = browser.issue {
-                    EmptyStateView(
-                        title: "Unable to load YouTube",
-                        systemImage: "wifi.exclamationmark",
-                        description: Text(issue),
-                        buttonTitle: "Try again"
-                    ) {
-                        if browser.web.url != nil { browser.web.reload() } else { browser.load(path: "/") }
-                    }
+                if !account.isSignedIn {
+                    SignInView(onSignIn: { showSignIn = true })
                 } else {
-                    BrowseSurface(browser: browser).edgesIgnoringSafeArea(.all)
+                    feedContent
                 }
             }
-            Menu {
-                Button { browser.web.goBack() } label: { Label("Back", systemImage: "chevron.backward") }
-                    .disabled(!browser.canGoBack)
-                Button { browser.load(path: "/") } label: { Label("Home", systemImage: "house") }
-                Button { browser.load(path: "/feed/subscriptions") } label: { Label("Subscriptions", systemImage: "rectangle.stack") }
-                Button { browser.load(path: "/feed/library") } label: { Label("YouTube library", systemImage: "folder") }
-                Button { browser.web.reload() } label: { Label("Reload", systemImage: "arrow.clockwise") }
-                if let url = browser.web.url {
-                    Button { UIApplication.shared.open(url) } label: { Label("Open in Safari", systemImage: "safari") }
+            .navigationTitle(title)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Menu {
+                        Button { Task { await feed.load(.home) } } label: { Label("Home", systemImage: "house") }
+                        Button { Task { await feed.load(.subscriptions) } } label: { Label("Subscriptions", systemImage: "rectangle.stack") }
+                        Button { showSignIn = true } label: { Label("Account", systemImage: "person.circle") }
+                    } label: {
+                        Image(systemName: "ellipsis.circle")
+                    }
                 }
-            } label: {
-                Image(systemName: "ellipsis.circle.fill")
-                    .font(.system(size: 26))
-                    .foregroundColor(.primary)
-                    .padding(7)
-                    .background(Circle().fill(Color(UIColor.systemBackground).opacity(0.8)))
             }
-            .padding()
+        }
+        .navigationViewStyle(StackNavigationViewStyle())
+        .sheet(isPresented: $showSignIn) { SignInSheet() }
+        .onAppear {
+            if account.isSignedIn, feed.videos.isEmpty { Task { await feed.load(.home) } }
+        }
+    }
+
+    private var title: String {
+        switch feed.mode {
+        case .home: return "Home"
+        case .subscriptions: return "Subscriptions"
+        case .search(let q): return q
+        }
+    }
+
+    private var feedContent: some View {
+        VStack(spacing: 0) {
+            // Search field
+            HStack {
+                Image(systemName: "magnifyingglass").foregroundColor(.secondary)
+                TextField("Search YouTube", text: $query, onCommit: submitSearch)
+                    .autocapitalization(.none).disableAutocorrection(true)
+                if !query.isEmpty {
+                    Button { query = "" } label: { Image(systemName: "xmark.circle.fill").foregroundColor(.secondary) }
+                }
+            }
+            .padding(10)
+            .background(Color.secondary.opacity(0.12))
+            .cornerRadius(10)
+            .padding(.horizontal, 12).padding(.vertical, 6)
+
+            if feed.loading && feed.videos.isEmpty {
+                Spacer()
+                ProgressView("Loading…")
+                Spacer()
+            } else if let message = feed.message, feed.videos.isEmpty {
+                EmptyStateView(title: message, systemImage: "exclamationmark.triangle",
+                               description: Text("Try signing in again from the Account menu."),
+                               buttonTitle: "Retry") {
+                    Task { await feed.load(.home) }
+                }
+            } else {
+                ScrollView {
+                    LazyVGrid(columns: [GridItem(.flexible())], spacing: 16) {
+                        ForEach(feed.videos) { video in
+                            Button { playback.open(video.video) } label: {
+                                FeedCard(video: video)
+                            }
+                            .buttonStyle(.plain)
+                            .onAppear {
+                                if video == feed.videos.last { Task { await feed.loadMore() } }
+                            }
+                        }
+                    }
+                    .padding(.horizontal, 12)
+                    if feed.loading { ProgressView().padding() }
+                }
+            }
+        }
+    }
+
+    private func submitSearch() {
+        let text = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        // Pasted YouTube link plays directly.
+        if let url = URL(string: text), let video = Video.parse(url) {
+            playback.open(video); return
+        }
+        Task { await feed.load(.search(text)) }
+    }
+}
+
+struct FeedCard: View {
+    let video: FeedVideo
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ZStack(alignment: .bottomTrailing) {
+                RemoteThumbnail(url: video.thumbnailURL)
+                    .frame(maxWidth: .infinity)
+                    .aspectRatio(16 / 9, contentMode: .fit)
+                    .clipped().cornerRadius(8)
+                if let duration = video.duration {
+                    Text(duration).font(.caption2).foregroundColor(.white)
+                        .padding(.horizontal, 5).padding(.vertical, 2)
+                        .background(Color.black.opacity(0.75)).cornerRadius(3)
+                        .padding(6)
+                }
+            }
+            Text(video.title).font(.subheadline).foregroundColor(.primary)
+                .lineLimit(2).multilineTextAlignment(.leading)
+            HStack(spacing: 4) {
+                if let channel = video.channel { Text(channel) }
+                if let views = video.views { Text("· \(views)") }
+                if let date = video.published { Text("· \(date)") }
+            }
+            .font(.caption).foregroundColor(.secondary).lineLimit(1)
+        }
+    }
+}
+
+/// First-run / signed-out prompt.
+struct SignInView: View {
+    let onSignIn: () -> Void
+    var body: some View {
+        EmptyStateView(
+            title: "Sign in to YouTube",
+            systemImage: "person.crop.circle.badge.questionmark",
+            description: Text("Sign in with your Google account to see personalized recommendations, subscriptions and search."),
+            buttonTitle: "Sign in",
+            action: onSignIn
+        )
+    }
+}
+
+/// Device-code sign-in sheet: shows the code, opens google.com/device and polls.
+struct SignInSheet: View {
+    @ObservedObject private var account = Account.shared
+    @Environment(\.presentationMode) private var presentation
+    @State private var flow: DeviceCodeFlow?
+    @State private var status = "Preparing sign-in…"
+    @State private var error: String?
+    @State private var pollTask: Task<Void, Never>?
+
+    var body: some View {
+        NavigationView {
+            VStack(spacing: 20) {
+                Image(systemName: "tv.and.hi.fi.signal").font(.system(size: 44)).foregroundColor(.accentColor)
+                Text("Sign in with your Google account").font(.headline)
+                if let flow {
+                    VStack(spacing: 8) {
+                        Text("Enter this code at \(flow.verificationURL):")
+                            .font(.subheadline).foregroundColor(.secondary)
+                        Text(flow.userCode).font(.system(size: 30, weight: .bold, design: .monospaced))
+                        Button("Copy code") { UIPasteboard.general.string = flow.userCode }
+                        Button("Open verification page") {
+                            if let url = URL(string: flow.verificationURL) { UIApplication.shared.open(url) }
+                        }
+                    }
+                    .padding().background(Color.secondary.opacity(0.1)).cornerRadius(12)
+                }
+                Text(status).font(.subheadline).foregroundColor(.secondary)
+                if let error { Text(error).font(.caption).foregroundColor(.red) }
+                Spacer()
+            }
+            .padding().navigationTitle("Sign in")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button("Cancel") { pollTask?.cancel(); presentation.wrappedValue.dismiss() }
+                }
+            }
+        }
+        .navigationViewStyle(StackNavigationViewStyle())
+        .onAppear(perform: start)
+        .onDisappear { pollTask?.cancel() }
+    }
+
+    private func start() {
+        Task {
+            do {
+                let result = try await account.beginSignIn()
+                await MainActor.run {
+                    flow = result
+                    UIPasteboard.general.string = result.userCode
+                    status = "Waiting for approval…"
+                }
+                let task = Task {
+                    do {
+                        try await account.awaitApproval(result)
+                        await MainActor.run {
+                            status = "Signed in"
+                            presentation.wrappedValue.dismiss()
+                            Task { await Feed.shared.load(.home) }
+                        }
+                    } catch {
+                        await MainActor.run { self.error = error.localizedDescription }
+                    }
+                }
+                await MainActor.run { pollTask = task }
+            } catch {
+                await MainActor.run { self.error = error.localizedDescription }
+            }
         }
     }
 }
