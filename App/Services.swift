@@ -13,6 +13,13 @@ enum MediaError: LocalizedError {
 
 enum Media {
     static func source(_ video: Video, audioOnly: Bool = false, download: Bool = false) async throws -> URL {
+        // Fast path: ANDROID client returns direct URLs in one request with no
+        // on-device JS descrambling. This is what makes native players feel
+        // instant; YouTubeKit is kept as a fallback for unusual videos.
+        if let fast = try? await FastMedia.resolve(video.id, audioOnly: audioOnly, download: download) {
+            return fast
+        }
+
         let youtube = YouTube(videoID: video.id, methods: [.local])
         do {
             let streams = try await youtube.streams
