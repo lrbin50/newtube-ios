@@ -207,9 +207,34 @@ enum FeedError: LocalizedError {
     }
 
     private static func video(from dict: [String: Any]) -> FeedVideo? {
+        // New TVHTML5 home/channel format (2026): a `tileRenderer` carries the
+        // video id in `contentId`, the title in `metadata.tileMetadataRenderer`,
+        // and channel/views/date in that renderer's `lines`. No `*Renderer`
+        // wrapper holds a `videoId` any more — this shape is what made the
+        // feed render blank. Detect it first.
+        if let tile = dict["tileRenderer"] as? [String: Any],
+           let id = tile["contentId"] as? String, id.count == 11,
+           let type = tile["contentType"] as? String, type.contains("VIDEO") {
+            return tileVideo(tile, id: id)
+        }
+        // `lockupViewModel` (channel grids / search): contentId + lockup metadata.
+        if let lockup = dict["lockupViewModel"] as? [String: Any],
+           let id = lockup["contentId"] as? String, id.count == 11 {
+            let type = lockup["contentType"] as? String ?? "LOCKUP_CONTENT_TYPE_VIDEO"
+            guard type.contains("VIDEO") else { return nil }
+            var titleField: Any?
+            if let meta = lockup["metadata"] as? [String: Any],
+               let lock = meta["lockupMetadataViewModel"] as? [String: Any] {
+                titleField = lock["title"]
+            }
+            let title = text(titleField)
+            guard !title.isEmpty else { return nil }
+            return FeedVideo(id: id, title: title)
+        }
+
         var renderer: [String: Any]?
         for key in ["videoRenderer", "compactVideoRenderer", "gridVideoRenderer",
-                    "richItemRenderer", "tileRenderer", "playlistVideoRenderer"] {
+                    "richItemRenderer", "playlistVideoRenderer"] {
             if let candidate = dict[key] as? [String: Any] { renderer = candidate; break }
         }
         var id: String?
@@ -223,9 +248,6 @@ enum FeedError: LocalizedError {
             if let content = r["content"] as? [String: Any],
                let inner = content["videoRenderer"] as? [String: Any] {
                 renderer = inner
-            } else if let header = r["header"] as? [String: Any],
-                      let inner = header["tileHeaderRenderer"] as? [String: Any] {
-                renderer = inner
             }
             let rr = renderer!
             id = rr["videoId"] as? String
@@ -234,12 +256,6 @@ enum FeedError: LocalizedError {
             viewField = rr["viewCountText"] ?? rr["shortViewCountText"]
             durationField = rr["lengthText"]
             publishedField = rr["publishedTimeText"]
-        } else if let lockup = dict["lockupViewModel"] as? [String: Any] {
-            id = lockup["contentId"] as? String
-            if let meta = lockup["metadata"] as? [String: Any],
-               let lock = meta["lockupMetadataViewModel"] as? [String: Any] {
-                titleField = lock["title"]
-            }
         }
         guard let videoId = id, videoId.count == 11 else { return nil }
         let title = text(titleField)
@@ -251,6 +267,70 @@ enum FeedError: LocalizedError {
             duration: text(durationField).nilIfEmpty,
             published: text(publishedField).nilIfEmpty
         )
+    }
+
+    /// Parses the new `tileRenderer` shape: title from tileMetadataRenderer,
+    /// channel/views/date from its `lines`, duration from a header overlay.
+    private static func tileVideo(_ tile: [String: Any], id: String) -> FeedVideo? {
+        let meta = (tile["metadata"] as? [String: Any])?["tileMetadataRenderer"] as? [String: Any]
+        let title = text(meta?["title"])
+        guard !title.isEmpty else { return nil }
+
+        var lineTexts: [String] = []
+        if let lines = meta?["lines"] as? [[String: Any]] {
+            for line in lines {
+                let items = (line["lineRenderer"] as? [String: Any])?["items"] as? [[String: Any]] ?? []
+                let joined = items.compactMap { item -> String? in
+                    guard let li = item["lineItemRenderer"] as? [String: Any] else { return nil }
+                    var value = li["text"]
+                    if value == nil, let badge = li["badge"] as? [String: Any],
+                       let meta = badge["metadataBadgeRenderer"] as? [String: Any] {
+                        value = meta["label"]
+                    }
+                    let s = text(value)
+                    return s.isEmpty ? nil : s
+                }.joined(separator: " ")
+                if !joined.isEmpty { lineTexts.append(joined) }
+            }
+        }
+        // First line is the channel; the second typically holds badges + views • date.
+        let channel = lineTexts.first
+        var views: String?
+        var published: String?
+        if lineTexts.count > 1 {
+            let parts = lineTexts[1].split(separator: " ").map(String.init)
+            // e.g. ["4K", "CC", "100M", "views", "•", "9", "days", "ago"]
+            var viewTokens: [String] = []
+            var dateTokens: [String] = []
+            var afterBullet = false
+            for part in parts {
+                if part == "•" { afterBullet = true; continue }
+                // Skip short quality/language badges such as 4K, CC, HD.
+                if !afterBullet && part.count <= 3 && !part.lowercased().contains("view") {
+                    if viewTokens.isEmpty { continue }
+                }
+                if afterBullet { dateTokens.append(part) }
+                else { viewTokens.append(part) }
+            }
+            if viewTokens.contains(where: { $0.lowercased().contains("view") || $0 == "观看" }) {
+                views = viewTokens.joined(separator: " ")
+            }
+            if !dateTokens.isEmpty { published = dateTokens.joined(separator: " ") }
+        }
+
+        var duration: String?
+        if let header = tile["header"] as? [String: Any],
+           let tileHeader = header["tileHeaderRenderer"] as? [String: Any],
+           let overlays = tileHeader["thumbnailOverlays"] as? [[String: Any]] {
+            for overlay in overlays {
+                if let status = overlay["thumbnailOverlayTimeStatusRenderer"] as? [String: Any],
+                   let s = status["text"] as? [String: Any], (s["simpleText"] as? String) != nil {
+                    duration = text(s); break
+                }
+            }
+        }
+        return FeedVideo(id: id, title: title, channel: channel?.nilIfEmpty,
+                         views: views, duration: duration, published: published)
     }
 
     private static func text(_ value: Any?) -> String {
