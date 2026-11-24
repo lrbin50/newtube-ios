@@ -94,13 +94,15 @@ import SwiftUI
                 refreshNowPlaying()
                 resume()
                 resolving = false
+                // Extra community lookups wait until playback has started so
+                // they never compete with stream resolution for bandwidth.
+                if !Task.isCancelled { refreshCommunity() }
             } catch {
                 guard !Task.isCancelled else { return }
                 resolving = false
                 failure = error.localizedDescription
             }
         }
-        refreshCommunity()
     }
 
     func refreshCommunity() {

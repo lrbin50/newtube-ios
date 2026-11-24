@@ -8,10 +8,14 @@ import SafariServices
     @Published var issue: String?
     @Published var canGoBack = false
     private var backObserver: NSKeyValueObservation?
+    private var lastRequestURL: URL?
+    private var autoRetried = false
 
     override init() {
         let config = WKWebViewConfiguration()
         config.allowsInlineMediaPlayback = true
+        // Force the mobile site even on iPad; the desktop layout is much heavier.
+        config.defaultWebpagePreferences.preferredContentMode = .mobile
         if let file = Bundle.main.url(forResource: "Browse", withExtension: "js"),
            let code = try? String(contentsOf: file, encoding: .utf8) {
             config.userContentController.addUserScript(WKUserScript(source: code, injectionTime: .atDocumentEnd, forMainFrameOnly: true))
@@ -31,7 +35,10 @@ import SafariServices
         url.path = path
         if !query.isEmpty { url.queryItems = query }
         issue = nil
-        web.load(URLRequest(url: url.url!))
+        autoRetried = false
+        lastRequestURL = url.url
+        // Returning to a visited page should be instant via the web cache.
+        web.load(URLRequest(url: url.url!, cachePolicy: .returnCacheDataElseLoad, timeoutInterval: 30))
     }
 
     func search(_ text: String) {
@@ -67,7 +74,18 @@ import SafariServices
 
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) { issue = nil }
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
-        if (error as NSError).code != NSURLErrorCancelled { issue = error.localizedDescription }
+        let ns = error as NSError
+        guard ns.code != NSURLErrorCancelled else { return }
+        // A single silent retry on a flaky connection fixes most first-load failures.
+        if !autoRetried, let url = lastRequestURL {
+            autoRetried = true
+            issue = nil
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                webView.load(URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 30))
+            }
+            return
+        }
+        issue = error.localizedDescription
     }
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) { webView.reload() }
 }

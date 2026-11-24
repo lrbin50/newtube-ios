@@ -113,6 +113,7 @@ struct FullScreenPlayerView: View {
     @State private var liked = false
     @State private var disliked = false
     @State private var subscribed = false
+    @State private var didLoadMeta = false
     let video: Video
 
     var body: some View {
@@ -144,10 +145,19 @@ struct FullScreenPlayerView: View {
                     // Portrait: player on top, details scrolling underneath.
                     ScrollView {
                         VStack(spacing: 0) {
-                            ZStack {
+                            ZStack(alignment: .topLeading) {
                                 PlayerSurface(player: playback.player)
                                     .frame(height: geo.size.width * 9 / 16)
                                 if playback.resolving { ProgressView().accentColor(.white) }
+                                // Back button stays reachable while loading and playing.
+                                Button { playback.close() } label: {
+                                    Image(systemName: "chevron.down")
+                                        .font(.system(size: 18, weight: .semibold))
+                                        .foregroundColor(.white)
+                                        .padding(8)
+                                        .background(Circle().fill(Color.black.opacity(0.5)))
+                                }
+                                .padding(8)
                             }
                             detail
                         }
@@ -167,7 +177,12 @@ struct FullScreenPlayerView: View {
                 }
             }
         }
-        .onAppear(perform: load)
+        // Defer detail/network-heavy work until the stream is ready, so it does
+        // not compete with video resolution on a slow connection.
+        .onAppear { if !playback.resolving { load() } }
+        .onChange(of: playback.resolving) { resolving in
+            if !resolving { load() }
+        }
         .sheet(item: $webPlayer) { video in WebPlayer(url: video.watchURL).ignoresSafeArea() }
     }
 
@@ -282,10 +297,14 @@ struct FullScreenPlayerView: View {
     }
 
     private func load() {
+        guard !didLoadMeta else { return }
+        didLoadMeta = true
         Task {
-            let loaded = await Meta.load(video)
-            let suggestions = await Meta.related(to: video)
-            await MainActor.run { meta = loaded; related = suggestions }
+            // Run both requests concurrently instead of one after the other.
+            async let loaded = Meta.load(video)
+            async let suggestions = Meta.related(to: video)
+            let (info, next) = await (loaded, suggestions)
+            await MainActor.run { meta = info; related = next }
         }
     }
 
