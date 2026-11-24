@@ -100,79 +100,193 @@ struct BrowseView: View {
     }
 }
 
-/// Full-screen playback page. AVKit supplies the player controls, Picture in
-/// Picture and AirPlay; the bars around it provide NewTube specific actions.
+/// Player page styled after the Android app. Portrait shows a 16:9 player on
+/// top with a scrollable detail list below (actions, channel, comments, up
+/// next). Landscape keeps the player full screen with a minimal overlay.
 struct FullScreenPlayerView: View {
     @EnvironmentObject var playback: Playback
     @EnvironmentObject var library: Library
     @EnvironmentObject var tv: Television
     @State private var webPlayer: Video?
+    @State private var meta = VideoMeta()
+    @State private var related: [Video] = []
+    @State private var liked = false
+    @State private var disliked = false
+    @State private var subscribed = false
     let video: Video
 
     var body: some View {
-        ZStack {
-            Color.black.edgesIgnoringSafeArea(.all)
-            VStack(spacing: 0) {
-                HStack(spacing: 12) {
-                    Button { playback.close() } label: {
-                        Image(systemName: "chevron.down").font(.system(size: 20, weight: .semibold))
-                    }
-                    Text(playback.communityTitle ?? video.title)
-                        .font(.headline).lineLimit(1).frame(maxWidth: .infinity)
-                    Menu {
-                        Button(library.saved.contains(where: { $0.id == video.id }) ? "Remove from Watch later" : "Watch later") {
-                            library.bookmark(video)
-                        }
-                        Button("Download video") { playback.save(video, audioOnly: false) }
-                        Button("Download audio") { playback.save(video, audioOnly: true) }
-                        if let name = tv.name {
-                            Button("Play on \(name)", action: cast)
-                        }
-                        Button("Open in YouTube", action: openWeb)
-                        ShareButton(url: video.watchURL)
-                    } label: {
-                        Image(systemName: "ellipsis.circle").font(.system(size: 20))
-                    }
-                }
-                .padding(.horizontal).padding(.vertical, 10)
-                .foregroundColor(.white)
-
-                ZStack {
+        GeometryReader { geo in
+            let landscape = geo.size.width > geo.size.height
+            ZStack {
+                Color.black.edgesIgnoringSafeArea(.all)
+                if landscape {
+                    // Landscape: nothing but the player.
                     PlayerSurface(player: playback.player)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    if playback.resolving {
-                        ProgressView().accentColor(.white)
+                        .overlay(Group {
+                            if playback.resolving { ProgressView().accentColor(.white) }
+                        })
+                    VStack {
+                        HStack {
+                            Button { playback.close() } label: {
+                                Image(systemName: "chevron.down")
+                                    .font(.system(size: 18, weight: .semibold))
+                                    .foregroundColor(.white)
+                                    .padding(8)
+                                    .background(Circle().fill(Color.black.opacity(0.5)))
+                            }
+                            Spacer()
+                        }.padding()
+                        Spacer()
+                    }
+                } else {
+                    // Portrait: player on top, details scrolling underneath.
+                    ScrollView {
+                        VStack(spacing: 0) {
+                            ZStack {
+                                PlayerSurface(player: playback.player)
+                                    .frame(height: geo.size.width * 9 / 16)
+                                if playback.resolving { ProgressView().accentColor(.white) }
+                            }
+                            detail
+                        }
                     }
                 }
 
                 if let failure = playback.failure {
-                    VStack(spacing: 8) {
-                        Text(failure).font(.caption).lineLimit(3)
-                            .foregroundColor(.white).multilineTextAlignment(.center)
+                    VStack(spacing: 10) {
+                        Text(failure).font(.caption).multilineTextAlignment(.center).foregroundColor(.white)
                         HStack {
                             Button("Retry") { playback.open(video) }
                             Button("Use web player", action: openWeb)
                         }.accentColor(.white)
-                    }.padding()
-                }
-
-                HStack(alignment: .top) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(playback.communityTitle ?? video.title)
-                            .font(.subheadline).foregroundColor(.white).lineLimit(2)
-                        if let count = playback.dislikes {
-                            Text("\(count) estimated dislikes").font(.caption2).foregroundColor(.gray)
-                        }
                     }
-                    Spacer()
-                    if !playback.queue.isEmpty {
-                        Button("Next (\(playback.queue.count))") { playback.next() }
-                    }
+                    .padding().background(Color.black.opacity(0.75)).cornerRadius(10)
+                    .padding()
                 }
-                .padding()
             }
         }
+        .onAppear(perform: load)
         .sheet(item: $webPlayer) { video in WebPlayer(url: video.watchURL).ignoresSafeArea() }
+    }
+
+    private var detail: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            // Title and stats
+            VStack(alignment: .leading, spacing: 4) {
+                Text(playback.communityTitle ?? video.title)
+                    .font(.headline).foregroundColor(.primary).fixedSize(horizontal: false, vertical: true)
+                HStack(spacing: 6) {
+                    if let views = meta.views { Text(views) }
+                    if let date = meta.published { Text("· \(date)") }
+                    if let count = playback.dislikes { Text("· \(count) dislikes") }
+                }
+                .font(.caption).foregroundColor(.secondary)
+            }
+
+            // Action buttons
+            HStack(spacing: 8) {
+                action(system: liked ? "hand.thumbsup.fill" : "hand.thumbsup",
+                       label: meta.likes ?? "Like", active: liked) {
+                    liked.toggle(); if liked { disliked = false }
+                }
+                action(system: disliked ? "hand.thumbsdown.fill" : "hand.thumbsdown",
+                       label: "Dislike", active: disliked) {
+                    disliked.toggle(); if disliked { liked = false }
+                }
+                action(system: "square.and.arrow.up", label: "Share", active: false, tap: openWeb)
+                action(system: "arrow.down.to.line", label: "Download", active: false) {
+                    playback.save(video, audioOnly: false)
+                }
+                action(system: library.saved.contains(where: { $0.id == video.id }) ? "bookmark.fill" : "bookmark",
+                       label: "Save", active: library.saved.contains(where: { $0.id == video.id })) {
+                    library.bookmark(video)
+                }
+            }
+
+            // Channel row
+            HStack(spacing: 12) {
+                Circle().fill(Color.accentColor.opacity(0.2))
+                    .overlay(Text((meta.author ?? "?").prefix(1).uppercased())
+                        .font(.headline).foregroundColor(.accentColor))
+                    .frame(width: 44, height: 44)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(meta.author ?? "YouTube channel").font(.subheadline.bold())
+                    Text("Channel").font(.caption).foregroundColor(.secondary)
+                }
+                Spacer()
+                Button { subscribed.toggle() } label: {
+                    Text(subscribed ? "Subscribed" : "Subscribe")
+                        .font(.subheadline.bold())
+                        .padding(.horizontal, 16).padding(.vertical, 8)
+                        .background(subscribed ? Color.secondary.opacity(0.2) : Color.primary)
+                        .foregroundColor(subscribed ? .primary : Color(UIColor.systemBackground))
+                        .cornerRadius(20)
+                }
+            }
+
+            // Comments
+            Button(action: openWeb) {
+                HStack {
+                    Image(systemName: "bubble.left").foregroundColor(.primary)
+                    Text("Comments").foregroundColor(.primary)
+                    Spacer()
+                    Image(systemName: "chevron.right").foregroundColor(.secondary)
+                }
+                .padding().background(Color.secondary.opacity(0.1)).cornerRadius(10)
+            }
+
+            // Up next
+            if !related.isEmpty {
+                Text("Up next").font(.headline)
+                ForEach(related) { item in
+                    Button { playback.open(item) } label: {
+                        HStack(alignment: .top, spacing: 10) {
+                            RemoteThumbnail(url: item.thumbnailURL)
+                                .frame(width: 120, height: 68).clipped()
+                                .cornerRadius(6)
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(item.title).font(.subheadline).lineLimit(3)
+                                    .foregroundColor(.primary)
+                                Text(item.id).font(.caption2).foregroundColor(.secondary)
+                            }
+                        }
+                    }
+                }
+            }
+
+            // More actions
+            Menu {
+                Button("Download audio only") { playback.save(video, audioOnly: true) }
+                if let name = tv.name { Button("Play on \(name)", action: cast) }
+                Button("Open in YouTube", action: openWeb)
+            } label: {
+                Label("More actions", systemImage: "ellipsis.circle")
+            }
+        }
+        .padding()
+    }
+
+    private func action(system: String, label: String, active: Bool, tap: @escaping () -> Void) -> some View {
+        Button(action: tap) {
+            VStack(spacing: 4) {
+                Image(systemName: system).font(.system(size: 20))
+                    .foregroundColor(active ? .accentColor : .primary)
+                Text(label).font(.caption2).foregroundColor(.secondary).lineLimit(1)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 8)
+            .background(Color.secondary.opacity(0.1)).cornerRadius(10)
+        }
+    }
+
+    private func load() {
+        Task {
+            let loaded = await Meta.load(video)
+            let suggestions = await Meta.related(to: video)
+            await MainActor.run { meta = loaded; related = suggestions }
+        }
     }
 
     private func openWeb() {
