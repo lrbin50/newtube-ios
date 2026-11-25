@@ -27,8 +27,20 @@ struct FeedVideo: Identifiable, Codable, Equatable {
     var video: Video { Video(id: id, title: title) }
 }
 
+/// One home-feed category chip. `params` is the opaque browse parameter the
+/// server ships with the current home response; when it is unavailable we
+/// fall back to a public TV search for `searchQuery`.
+struct FeedChip: Identifiable, Codable, Equatable {
+    var id: String { title }
+    let title: String
+    var params: String?
+    var browseId: String?
+    var searchQuery: String?
+}
+
 enum FeedMode: Equatable {
     case home
+    case category(FeedChip)
     case subscriptions
     case search(String)
 }
@@ -36,6 +48,7 @@ enum FeedMode: Equatable {
 struct FeedPage {
     var videos: [FeedVideo]
     var continuation: String?
+    var chips: [FeedChip] = []
 }
 
 enum FeedError: LocalizedError {
@@ -53,6 +66,7 @@ enum FeedError: LocalizedError {
     static let shared = Feed()
 
     @Published private(set) var videos: [FeedVideo] = []
+    @Published private(set) var chips: [FeedChip] = Feed.defaultChips
     @Published private(set) var loading = false
     @Published private(set) var loadingMore = false
     @Published private(set) var message: String?
@@ -65,6 +79,22 @@ enum FeedError: LocalizedError {
     }()
     private let apiKey = "AIzaSyA8eiZmM1FaDVjRy-df2KTyQ_vz_yYM39w"
     private let tvAgent = "com.google.android.youtube/20.10.38 (Linux; U; Android 11) gzip"
+    private let tvClientVersion = "7.20260311.12.00"
+
+    /// Display order matches the YouTube phone/tablet home chips. Titles are
+    /// kept in English and localized by the view; `searchQuery` is the fallback
+    /// used when the server did not hand us a browse `params` for that chip.
+    static let defaultChips: [FeedChip] = [
+        FeedChip(title: "All", searchQuery: nil),
+        FeedChip(title: "Music", searchQuery: "music"),
+        FeedChip(title: "Podcasts", searchQuery: "podcasts"),
+        FeedChip(title: "Mixes", searchQuery: "mixes"),
+        FeedChip(title: "Live", searchQuery: "live"),
+        FeedChip(title: "Travel", searchQuery: "travel"),
+        FeedChip(title: "Recently uploaded", searchQuery: "recently uploaded"),
+        FeedChip(title: "Watched", searchQuery: "watched"),
+        FeedChip(title: "New to you", searchQuery: "new to you")
+    ]
 
     /// Loads a mode. Home shows cached results instantly, then refreshes.
     func load(_ next: FeedMode, force: Bool = false) async {
@@ -72,8 +102,11 @@ enum FeedError: LocalizedError {
         videos = []
         continuation = nil
         message = nil
-        if next == .home, videos.isEmpty { loadCache() }
-        guard let token = try? await Account.shared.validToken() else {
+        if next == .home { loadCache() }
+        let token = try? await Account.shared.validToken()
+        // Only personalized feeds require a token; categories and searches
+        // are public and must still work if token refresh transiently fails.
+        if token == nil && (next == .home || next == .subscriptions) {
             if videos.isEmpty { message = FeedError.notSignedIn.errorDescription }
             return
         }
@@ -84,23 +117,39 @@ enum FeedError: LocalizedError {
         guard !loadingMore, let cont = continuation else { return }
         loadingMore = true
         defer { loadingMore = false }
-        guard let token = try? await Account.shared.validToken() else { return }
+        let token = try? await Account.shared.validToken()
         guard let page = try? await request(token: token, continuation: cont) else { return }
         merge(page)
     }
 
-    private func refresh(token: String, continuation: String?) async {
+    private func refresh(token: String?, continuation: String?) async {
         loading = true
         defer { loading = false }
         guard let page = try? await request(token: token, continuation: continuation) else {
+            // A server-issued category `params` can expire. Never leave the
+            // chip stuck on an error: retry the same category as a public
+            // TV search (no bearer token — that combination returns 401).
+            if case .category(let chip) = mode, chip.params != nil,
+               let fallback = try? await search(query: chip.searchQuery ?? chip.title, token: nil) {
+                apply(fallback, continuation: continuation)
+                return
+            }
             if videos.isEmpty { message = FeedError.badResponse.errorDescription }
             return
         }
+        apply(page, continuation: continuation)
+    }
+
+    private func apply(_ page: FeedPage, continuation: String?) {
         message = nil
         if continuation == nil {
             videos = page.videos
             self.continuation = page.continuation
-            if mode == .home { saveCache(page.videos) }
+            if mode == .home {
+                saveCache(page.videos)
+                // Pick up the freshest chip params the server gave us.
+                if !page.chips.isEmpty { chips = Self.mergeChips(page.chips) }
+            }
         } else {
             merge(page)
         }
@@ -116,54 +165,79 @@ enum FeedError: LocalizedError {
 
     // MARK: - Network
 
-    private func request(token: String, continuation: String?) async throws -> FeedPage? {
+    private func request(token: String?, continuation: String?) async throws -> FeedPage? {
         switch mode {
         case .home, .subscriptions:
             return try await browse(token: token, continuation: continuation)
+        case .category(let chip):
+            if continuation != nil {
+                return try await browse(token: token, continuation: continuation)
+            }
+            if let params = chip.params {
+                return try await browse(token: token, continuation: nil,
+                                        params: params,
+                                        browseId: chip.browseId ?? "FEwhat_to_watch")
+            }
+            // No server params: public TV search. The OAuth token belongs to
+            // the TV client, so sending it with an ANDROID search yields 401.
+            return try await search(query: chip.searchQuery ?? chip.title, token: nil)
         case .search(let query):
-            // Search has no continuation here; only the first page is shown.
             if continuation != nil { return nil }
-            return try await search(query: query, token: token)
+            return try await search(query: query, token: nil)
         }
     }
 
-    private func browse(token: String, continuation: String?) async throws -> FeedPage? {
-        let context: [String: Any] = [
-            "client": [
-                "clientName": "TVHTML5",
-                "clientVersion": "7.20260311.12.00",
-                "hl": "en", "gl": "US",
-                "platform": "TV",
-                "clientFormFactor": "UNKNOWN_FORM_FACTOR"
-            ],
-            "user": ["enableSafetyMode": false, "lockedSafetyMode": false],
-            "request": ["useSsl": true, "internalExperimentFlags": []]
+    private func context(clientName: String, clientVersion: String, platform: Bool) -> [String: Any] {
+        var client: [String: Any] = [
+            "clientName": clientName, "clientVersion": clientVersion,
+            "hl": "en", "gl": "US"
         ]
-        var body: [String: Any] = ["context": context]
+        if platform {
+            client["platform"] = "TV"
+            client["clientFormFactor"] = "UNKNOWN_FORM_FACTOR"
+        }
+        var ctx: [String: Any] = ["client": client]
+        if platform {
+            ctx["user"] = ["enableSafetyMode": false, "lockedSafetyMode": false]
+            ctx["request"] = ["useSsl": true, "internalExperimentFlags": []]
+        }
+        return ctx
+    }
+
+    private func browse(token: String?, continuation: String?,
+                        params: String? = nil,
+                        browseId: String? = nil) async throws -> FeedPage? {
+        var body: [String: Any] = ["context": context(clientName: "TVHTML5",
+                                                      clientVersion: tvClientVersion,
+                                                      platform: true)]
         if let cont = continuation {
             body["continuation"] = cont
         } else {
-            body["browseId"] = mode == .subscriptions ? "FEsubscriptions" : "FEwhat_to_watch"
+            body["browseId"] = browseId ?? (mode == .subscriptions ? "FEsubscriptions" : "FEwhat_to_watch")
+            if let params = params { body["params"] = params }
         }
         return try await post(endpoint: "browse", body: body, token: token, agent: tvAgent,
                               extraHeaders: [
                                 "X-YOUTUBE-CLIENT-NAME": "7",
-                                "X-YOUTUBE-CLIENT-VERSION": "7.20260311.12.00"
+                                "X-YOUTUBE-CLIENT-VERSION": tvClientVersion
                               ])
     }
 
-    private func search(query: String, token: String) async throws -> FeedPage? {
-        let context: [String: Any] = [
-            "client": [
-                "clientName": "ANDROID", "clientVersion": "20.10.38",
-                "androidSdkVersion": 30, "hl": "en", "gl": "US"
-            ]
+    private func search(query: String, token: String?) async throws -> FeedPage? {
+        // TVHTML5 search works anonymously and returns `lockupViewModel`
+        // entries the parser understands. Keep it token-free on purpose.
+        let body: [String: Any] = [
+            "context": context(clientName: "TVHTML5", clientVersion: tvClientVersion, platform: true),
+            "query": query
         ]
-        let body: [String: Any] = ["context": context, "query": query]
-        return try await post(endpoint: "search", body: body, token: token, agent: tvAgent, extraHeaders: [:])
+        return try await post(endpoint: "search", body: body, token: token, agent: tvAgent,
+                              extraHeaders: [
+                                "X-YOUTUBE-CLIENT-NAME": "7",
+                                "X-YOUTUBE-CLIENT-VERSION": tvClientVersion
+                              ])
     }
 
-    private func post(endpoint: String, body: [String: Any], token: String,
+    private func post(endpoint: String, body: [String: Any], token: String?,
                       agent: String, extraHeaders: [String: String]) async throws -> FeedPage? {
         guard let url = URL(string: "https://www.youtube.com/youtubei/v1/\(endpoint)?key=\(apiKey)&prettyPrint=false") else {
             return nil
@@ -172,7 +246,7 @@ enum FeedError: LocalizedError {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue(agent, forHTTPHeaderField: "User-Agent")
-        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        if let token = token { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
         for (key, value) in extraHeaders { request.setValue(value, forHTTPHeaderField: key) }
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
         let (data, response) = try await LegacyNetwork.data(for: request)
@@ -192,7 +266,7 @@ enum FeedError: LocalizedError {
         // YouTube carries continuation tokens in several shapes depending on
         // client/rollout. The main feed's token is typically the longest one.
         let cont = tokens.filter { $0.count > 40 }.max { $0.count < $1.count }
-        return FeedPage(videos: found, continuation: cont)
+        return FeedPage(videos: found, continuation: cont, chips: extractChips(json))
     }
 
     private static func walk(_ value: Any, into result: inout [FeedVideo],
@@ -226,19 +300,42 @@ enum FeedError: LocalizedError {
            let type = tile["contentType"] as? String, type.contains("VIDEO") {
             return tileVideo(tile, id: id)
         }
-        // `lockupViewModel` (channel grids / search): contentId + lockup metadata.
+        // `lockupViewModel` (TV search / channel grids): contentId plus
+        // lockup metadata. TVHTML5 labels normal videos as MUSIC as well as
+        // VIDEO — accepting only VIDEO made every category chip look empty.
         if let lockup = dict["lockupViewModel"] as? [String: Any],
            let id = lockup["contentId"] as? String, id.count == 11 {
             let type = lockup["contentType"] as? String ?? "LOCKUP_CONTENT_TYPE_VIDEO"
-            guard type.contains("VIDEO") else { return nil }
+            guard type.contains("VIDEO") || type.contains("MUSIC") else { return nil }
             var titleField: Any?
+            var channel: String?
+            var views: String?
+            var published: String?
             if let meta = lockup["metadata"] as? [String: Any],
                let lock = meta["lockupMetadataViewModel"] as? [String: Any] {
                 titleField = lock["title"]
+                if let cm = lock["metadata"] as? [String: Any],
+                   let model = cm["contentMetadataViewModel"] as? [String: Any],
+                   let rows = model["metadataRows"] as? [[String: Any]] {
+                    var lines: [String] = []
+                    for row in rows {
+                        let parts = row["metadataParts"] as? [[String: Any]] ?? []
+                        let joined = parts.compactMap { part -> String? in
+                            let s = text(part["text"])
+                            return s.isEmpty ? nil : s
+                        }.joined(separator: " ")
+                        if !joined.isEmpty { lines.append(joined) }
+                    }
+                    channel = lines.first
+                    if lines.count > 1 { views = lines[1] }
+                    if lines.count > 2 { published = lines[2] }
+                }
             }
             let title = text(titleField)
             guard !title.isEmpty else { return nil }
-            return FeedVideo(id: id, title: title)
+            return FeedVideo(id: id, title: title, channel: channel?.nilIfEmpty,
+                             views: views?.nilIfEmpty, duration: nil,
+                             published: published?.nilIfEmpty)
         }
 
         var renderer: [String: Any]?
@@ -354,6 +451,72 @@ enum FeedError: LocalizedError {
             return string
         }
         return ""
+    }
+
+    // MARK: - Category chips
+
+    /// Pull the current category params out of the home response instead of
+    /// hard-coding them: YouTube changes these server-side on every rollout.
+    /// Only titles we actually display are accepted, which keeps unrelated
+    /// navigation items (sidebar, footer) out of the chip bar.
+    private static func extractChips(_ json: [String: Any]) -> [FeedChip] {
+        let known = Set(defaultChips.map { $0.title })
+        var found: [String: FeedChip] = [:]
+
+        func collect(_ value: Any, title: String?) {
+            if let dict = value as? [String: Any] {
+                var currentTitle = title
+                for key in ["title", "text", "content", "label"] {
+                    let candidate = text(dict[key])
+                    if !candidate.isEmpty { currentTitle = candidate; break }
+                }
+                var endpoint = dict["browseEndpoint"] as? [String: Any]
+                if endpoint == nil, let command = dict["command"] as? [String: Any] {
+                    endpoint = command["browseEndpoint"] as? [String: Any]
+                }
+                if endpoint == nil, let command = dict["innertubeCommand"] as? [String: Any] {
+                    endpoint = command["browseEndpoint"] as? [String: Any]
+                }
+                if endpoint == nil,
+                   let executor = dict["commandExecutorCommand"] as? [String: Any],
+                   let commands = executor["commands"] as? [[String: Any]] {
+                    for command in commands {
+                        if let e = command["browseEndpoint"] as? [String: Any] {
+                            endpoint = e
+                            break
+                        }
+                        if let inner = command["innertubeCommand"] as? [String: Any],
+                           let e = inner["browseEndpoint"] as? [String: Any] {
+                            endpoint = e
+                            break
+                        }
+                    }
+                }
+                if let e = endpoint, let params = e["params"] as? String, !params.isEmpty,
+                   let chipTitle = currentTitle, known.contains(chipTitle), found[chipTitle] == nil {
+                    found[chipTitle] = FeedChip(title: chipTitle, params: params,
+                                                browseId: e["browseId"] as? String,
+                                                searchQuery: nil)
+                }
+                for child in dict.values { collect(child, title: currentTitle) }
+            } else if let array = value as? [Any] {
+                for child in array { collect(child, title: title) }
+            }
+        }
+        collect(json, title: nil)
+        return Array(found.values)
+    }
+
+    /// Keep the canonical display order and fill any chip the server omitted
+    /// with its public-search fallback, so the bar never changes shape.
+    private static func mergeChips(_ remote: [FeedChip]) -> [FeedChip] {
+        let byTitle = Dictionary(uniqueKeysWithValues: remote.map { ($0.title, $0) })
+        return defaultChips.map { base in
+            guard let fresh = byTitle[base.title] else { return base }
+            return FeedChip(title: base.title, params: fresh.params,
+                            browseId: fresh.browseId,
+                            searchQuery: fresh.params == nil ? base.searchQuery : nil)
+        }
     }
 
     // MARK: - Cache

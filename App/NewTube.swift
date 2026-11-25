@@ -110,9 +110,22 @@ struct BrowseView: View {
     @State private var showSignIn = false
     @State private var selectedChip = 0
 
-    private var chips: [String] {
-        ["chip.all", "chip.music", "chip.podcasts", "chip.mixes", "chip.live",
-         "chip.travel", "chip.recent", "chip.watched", "chip.newToYou"].map { L10n.tr($0) }
+    private let chipKeys = ["chip.all", "chip.music", "chip.podcasts", "chip.mixes", "chip.live",
+                            "chip.travel", "chip.recent", "chip.watched", "chip.newToYou"]
+
+    private var chips: [String] { chipKeys.map { L10n.tr($0) } }
+
+    /// Every chip must actually load something. Category chips use the params
+    /// harvested from the latest home response; when absent, Feed falls back
+    /// to a public TV search instead of the 401-prone ANDROID+bearer request.
+    private func selectChip(_ index: Int) {
+        selectedChip = index
+        if index == 0 {
+            Task { await feed.load(.home) }
+            return
+        }
+        let chip = feed.chips.indices.contains(index) ? feed.chips[index] : Feed.defaultChips[index]
+        Task { await feed.load(.category(chip)) }
     }
 
     var body: some View {
@@ -227,11 +240,7 @@ struct BrowseView: View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
                 ForEach(Array(chips.enumerated()), id: \.offset) { index, name in
-                    Button {
-                        selectedChip = index
-                        if index == 0 { Task { await feed.load(.home) } }
-                        else if index == 1 { Task { await feed.load(.search("music")) } }
-                    } label: {
+                    Button { selectChip(index) } label: {
                         Text(name).font(.system(size: 14, weight: .medium))
                             .padding(.horizontal, 14).padding(.vertical, 7)
                             .background(
