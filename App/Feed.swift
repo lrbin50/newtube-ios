@@ -17,6 +17,9 @@ struct FeedVideo: Identifiable, Codable, Equatable {
     var views: String?
     var duration: String?
     var published: String?
+    /// Real channel avatar URL when the feed response carried one. Defaulted
+    /// to nil so older cached JSON (which has no such key) still decodes.
+    var avatarURL: URL? = nil
 
     var thumbnailURL: URL {
         URL(string: "https://i.ytimg.com/vi/\(id)/hqdefault.jpg")!
@@ -289,6 +292,35 @@ enum FeedError: LocalizedError {
         }
     }
 
+    /// Extracts a channel avatar URL from any of the shapes InnerTube uses.
+    /// Home `tileRenderer` cards carry no avatar, but search/category/legacy
+    /// renderers do (`channelThumbnail`, `videoOwnerRenderer`, ...), so we pick
+    /// those up for free with no extra network request.
+    private static func avatarURL(from dict: [String: Any]) -> URL? {
+        func largest(_ value: Any?) -> URL? {
+            guard let d = value as? [String: Any],
+                  let thumbs = d["thumbnails"] as? [[String: Any]] else { return nil }
+            let best = thumbs.max { a, b in
+                (a["width"] as? Int ?? 0) < (b["width"] as? Int ?? 0)
+            }
+            guard let raw = best?["url"] as? String else { return nil }
+            return URL(string: raw)
+        }
+        // Direct fields on the renderer.
+        if let url = largest(dict["channelThumbnail"]) { return url }
+        if let supported = dict["channelThumbnailSupportedRenderers"] as? [String: Any],
+           let link = supported["channelThumbnailWithLinkRenderer"] as? [String: Any],
+           let url = largest(link["thumbnail"]) { return url }
+        if let owner = dict["videoOwnerRenderer"] as? [String: Any],
+           let url = largest(owner["thumbnail"]) { return url }
+        if let url = largest(dict["avatar"]) { return url }
+        // New TV lockups sometimes nest the owner avatar a level deeper.
+        if let meta = dict["metadata"] as? [String: Any],
+           let lock = meta["lockupMetadataViewModel"] as? [String: Any],
+           let url = largest(lock["avatar"]) { return url }
+        return nil
+    }
+
     private static func video(from dict: [String: Any]) -> FeedVideo? {
         // New TVHTML5 home/channel format (2026): a `tileRenderer` carries the
         // video id in `contentId`, the title in `metadata.tileMetadataRenderer`,
@@ -335,7 +367,8 @@ enum FeedError: LocalizedError {
             guard !title.isEmpty else { return nil }
             return FeedVideo(id: id, title: title, channel: channel?.nilIfEmpty,
                              views: views?.nilIfEmpty, duration: nil,
-                             published: published?.nilIfEmpty)
+                             published: published?.nilIfEmpty,
+                             avatarURL: avatarURL(from: lockup))
         }
 
         var renderer: [String: Any]?
@@ -371,7 +404,8 @@ enum FeedError: LocalizedError {
             channel: text(byline).nilIfEmpty,
             views: text(viewField).nilIfEmpty,
             duration: text(durationField).nilIfEmpty,
-            published: text(publishedField).nilIfEmpty
+            published: text(publishedField).nilIfEmpty,
+            avatarURL: renderer.flatMap { avatarURL(from: $0) }
         )
     }
 
@@ -436,7 +470,8 @@ enum FeedError: LocalizedError {
             }
         }
         return FeedVideo(id: id, title: title, channel: channel?.nilIfEmpty,
-                         views: views, duration: duration, published: published)
+                         views: views, duration: duration, published: published,
+                         avatarURL: avatarURL(from: tile))
     }
 
     private static func text(_ value: Any?) -> String {
