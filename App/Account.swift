@@ -54,6 +54,8 @@ enum AccountError: LocalizedError {
     @Published private(set) var avatarURL: URL?
     /// Pre-rendered circular avatar for the tab bar icon.
     @Published private(set) var avatarImage: UIImage?
+    /// Signed-in user's own channel id, used by the channel page.
+    @Published private(set) var channelId: String?
 
     private var tokens: OAuthTokens?
     private let service = "com.newtube.oauth"
@@ -174,6 +176,7 @@ enum AccountError: LocalizedError {
     }
 
     private func loadChannelProfile(_ channelId: String, token: String) async {
+        self.channelId = channelId
         guard let url = URL(string: "https://www.youtube.com/youtubei/v1/browse?key=\(apiKey)&prettyPrint=false")
         else { return }
         do {
@@ -385,6 +388,7 @@ enum AccountError: LocalizedError {
         accountName = nil
         avatarURL = nil
         avatarImage = nil
+        channelId = nil
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,

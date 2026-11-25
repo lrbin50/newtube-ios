@@ -93,9 +93,13 @@ struct RootView: View {
 
     @ViewBuilder
     private var youTabContent: some View {
-        // Signed-in: show the real Google account photo.
+        // Signed-in: show the real Google account photo. The raw UIImage is
+        // 200px, so it MUST be resized/clipped — an unbounded Image inside a
+        // tabItem overflows the tab bar and paints a large blue half-circle
+        // above the bottom bar (tinted blue on the You tab, grey elsewhere).
         if let image = account.avatarImage {
-            Image(uiImage: image)
+            Image(uiImage: image).resizable().scaledToFill()
+                .frame(width: 20, height: 20).clipShape(Circle())
         } else {
             Image(systemName: "person.crop.circle")
         }
@@ -955,6 +959,8 @@ struct LibraryView: View {
     @State private var showSettings = false
     @State private var showSearch = false
     @State private var showSignIn = false
+    @State private var showChannel = false
+    @State private var confirmSignOut = false
     @State private var searchText = ""
 
     enum Collection: String {
@@ -982,25 +988,43 @@ struct LibraryView: View {
             .navigationTitle("")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                // Title bar shows the signed-in avatar + name (or a sign-in
-                // button). Replaces the standalone "You" title and the big
-                // header avatar below, which wasted a full row.
-                ToolbarItem(placement: .principal) {
-                    Button { showSignIn = true } label: {
-                        HStack(spacing: 6) {
-                            accountAvatar(size: 26)
-                            if account.isSignedIn {
+                // Avatar on the LEFT at its original 54pt size; name sits
+                // beside it. Tapping the avatar opens the channel page; the
+                // chevron reveals account actions (switch / sign out).
+                ToolbarItem(placement: .navigationBarLeading) {
+                    HStack(spacing: 6) {
+                        Button { showChannel = true } label: { accountAvatar(size: 54) }
+                            .buttonStyle(.plain)
+                        if account.isSignedIn {
+                            VStack(alignment: .leading, spacing: 1) {
                                 Text(account.accountName ?? L10n.tr("you.signedIn"))
-                                    .font(.system(size: 14, weight: .semibold))
+                                    .font(.system(size: 13, weight: .semibold))
                                     .foregroundColor(.primary).lineLimit(1)
-                            } else {
+                                Text("@" + (account.accountName ?? "you"))
+                                    .font(.caption2).foregroundColor(.secondary).lineLimit(1)
+                            }
+                            Menu {
+                                Button { showChannel = true } label: {
+                                    Label(L10n.tr("you.viewChannel"), systemImage: "person.circle")
+                                }
+                                Button { showSignIn = true } label: {
+                                    Label(L10n.tr("you.switchAccount"), systemImage: "arrow.left.arrow.right")
+                                }
+                                Button { confirmSignOut = true } label: {
+                                    Label(L10n.tr("settings.signOut"), systemImage: "rectangle.portrait.and.arrow.right")
+                                }
+                            } label: {
+                                Image(systemName: "chevron.down")
+                                    .font(.caption).foregroundColor(.primary)
+                            }
+                        } else {
+                            Button { showSignIn = true } label: {
                                 Text(L10n.tr("signin.button"))
-                                    .font(.system(size: 14, weight: .semibold))
-                                    .foregroundColor(.accentColor).lineLimit(1)
+                                    .font(.system(size: 13, weight: .semibold))
+                                    .foregroundColor(.accentColor)
                             }
                         }
                     }
-                    .buttonStyle(.plain)
                 }
                 ToolbarItem(placement: .navigationBarTrailing) {
                     HStack(spacing: 16) {
@@ -1020,6 +1044,20 @@ struct LibraryView: View {
         }
         .sheet(isPresented: $showSettings) { SettingsView().environmentObject(tv) }
         .sheet(isPresented: $showSignIn) { SignInSheet() }
+        .sheet(isPresented: $showChannel) {
+            ChannelView(avatar: account.avatarImage, name: account.accountName)
+        }
+        .actionSheet(isPresented: $confirmSignOut) {
+            ActionSheet(
+                title: Text(L10n.shared.effective == .simplifiedChinese
+                    ? "退出登录并重新授权？"
+                    : "Sign out and re-authorize?"),
+                buttons: [
+                    .destructive(Text(L10n.tr("settings.signOut"))) { account.signOut() },
+                    .cancel()
+                ]
+            )
+        }
         .sheet(isPresented: $showSearch) {
             NavigationView {
                 VStack {
