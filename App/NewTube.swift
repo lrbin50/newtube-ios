@@ -120,12 +120,18 @@ struct RootView: View {
     /// Floating bottom-right mini window while the player is minimized;
     /// playback keeps running on top of every tab. (overlay(alignment:) is
     /// iOS 15+, so the alignment is built with spacer stacks for iOS 14.)
+    /// The bottom inset keeps the window entirely above the UITabBar.
     private var miniPlayerOverlay: some View {
-        HStack {
-            Spacer()
-            VStack {
+        GeometryReader { geo in
+            HStack {
                 Spacer()
-                miniPlayer
+                VStack {
+                    Spacer()
+                    miniPlayer
+                        // UITabBar (~49pt) + a small gap, plus the device's
+                        // bottom safe area (home indicator) on notched models.
+                        .padding(.bottom, 56 + geo.safeAreaInsets.bottom)
+                }
             }
         }
     }
@@ -554,7 +560,11 @@ struct FullScreenPlayerView: View {
                     }
                 } else {
                     // Portrait: the player is pinned at the top and never
-                    // scrolls; only the detail list underneath moves.
+                    // scrolls. The area beneath is either the scrolling detail
+                    // list or the comments panel. Comments take exactly the
+                    // remaining height so the two stack into one seamless
+                    // screen — the panel never covers, nor is covered by, the
+                    // player.
                     VStack(spacing: 0) {
                         ZStack {
                             PlayerSurface(player: playback.player)
@@ -564,8 +574,14 @@ struct FullScreenPlayerView: View {
                             if playback.resolving { ResolvingOverlay(thumbnail: video.thumbnailURL) }
                             playerControls(landscape: false)
                         }
-                        ScrollView {
-                            detail
+                        if showComments {
+                            CommentsPanel(videoId: video.id) {
+                                withAnimation(.easeIn(duration: 0.2)) { showComments = false }
+                            }
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .transition(.move(edge: .bottom))
+                        } else {
+                            ScrollView { detail }
                         }
                     }
                 }
@@ -582,17 +598,16 @@ struct FullScreenPlayerView: View {
                     .padding()
                 }
 
-                // Bottom-half comments overlay: the player stays visible on
-                // top while the panel slides up, like the Android app.
-                if showComments {
+                // Landscape only: the player fills the whole screen, so the
+                // comments panel slides up over its lower half. In portrait
+                // comments already occupy the area under the fixed player.
+                if showComments && landscape {
                     VStack(spacing: 0) {
                         Spacer(minLength: 0)
                         CommentsPanel(videoId: video.id) {
                             withAnimation(.easeIn(duration: 0.2)) { showComments = false }
                         }
-                        .frame(height: landscape
-                                ? geo.size.height * 0.72
-                                : geo.size.height * 0.58)
+                        .frame(height: geo.size.height * 0.72)
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .transition(.move(edge: .bottom))
@@ -911,15 +926,6 @@ struct FullScreenPlayerView: View {
                         .buttonStyle(.plain)
                     }
                 }
-            }
-
-            // More actions
-            Menu {
-                Button(L10n.tr("common.download") + " (audio)") { playback.save(video, audioOnly: true) }
-                if let name = tv.name { Button("\(L10n.tr("settings.playOnTV")): \(name)", action: cast) }
-                Button("\(L10n.tr("action.openYouTube"))", action: openWeb)
-            } label: {
-                Label(L10n.tr("player.moreActions"), systemImage: "ellipsis.circle")
             }
         }
         .padding()
