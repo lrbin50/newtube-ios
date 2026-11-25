@@ -183,3 +183,185 @@ struct SaveToPlaylistSheet: View {
         }
     }
 }
+
+// MARK: - Comments panel
+//
+// Bottom-half comments overlay for the player page, matching the Android
+// layout: drag handle, title row, community-guidelines notice, the comment
+// list and an input bar for posting a new comment.
+
+struct CommentsPanel: View {
+    let videoId: String
+    let onClose: () -> Void
+
+    @ObservedObject private var store = CommentsStore.shared
+    @State private var draft = ""
+
+    var body: some View {
+        VStack(spacing: 0) {
+            // Drag handle
+            Capsule().fill(Color.secondary.opacity(0.4))
+                .frame(width: 36, height: 4).padding(.top, 8)
+
+            // Title row
+            HStack {
+                Text(L10n.tr("comments.title", fallback: "Comments"))
+                    .font(.headline).foregroundColor(.primary)
+                Spacer()
+                Image(systemName: "info.circle")
+                    .foregroundColor(.secondary)
+                Button(action: onClose) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundColor(.primary)
+                        .padding(6)
+                        .background(Circle().fill(Color.secondary.opacity(0.15)))
+                }
+            }
+            .padding(.horizontal, 16).padding(.vertical, 10)
+
+            // Guidelines notice
+            ZStack {
+                Rectangle().fill(Color.secondary.opacity(0.12))
+                (Text(L10n.tr("comments.guidelines", fallback: "Please follow the YouTube Community Guidelines when commenting. "))
+                    + Text(L10n.tr("comments.learnMore", fallback: "Learn more"))
+                    .bold()
+                    .foregroundColor(Color(UIColor.systemBlue)))
+                    .font(.caption).foregroundColor(.secondary)
+            }
+            .frame(height: 30)
+
+            if store.loading {
+                VStack { Spinner(size: 34).padding(.top, 40) }
+                Spacer()
+            } else if let message = store.error {
+                VStack(spacing: 8) {
+                    Text(message).font(.subheadline).foregroundColor(.secondary)
+                }.padding(.top, 40)
+                Spacer()
+            } else if store.comments.isEmpty {
+                VStack(spacing: 8) {
+                    Image(systemName: "bubble.left").font(.system(size: 30)).foregroundColor(.secondary)
+                    Text(L10n.tr("comments.empty", fallback: "No comments yet"))
+                        .font(.subheadline).foregroundColor(.secondary)
+                }.padding(.top, 40)
+                Spacer()
+            } else {
+                List {
+                    ForEach(store.comments) { comment in
+                        CommentRow(comment: comment)
+                            .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+                    }
+                    // Load more page trigger.
+                    if store.nextPageAvailable {
+                        HStack {
+                            Spacer()
+                            if store.loadingMore {
+                                Spinner(size: 20)
+                            } else {
+                                Button(L10n.tr("comments.loadMore", fallback: "Load more")) {
+                                    Task { await store.loadMore() }
+                                }
+                                .font(.subheadline)
+                            }
+                            Spacer()
+                        }
+                    }
+                }
+                .listStyle(.plain)
+            }
+
+            // Input bar
+            HStack(spacing: 10) {
+                ZStack(alignment: .leading) {
+                    TextField(L10n.tr("comments.placeholder", fallback: "Add a comment..."),
+                              text: $draft)
+                        .font(.subheadline)
+                        .padding(.horizontal, 12).padding(.vertical, 8)
+                        .background(Color.secondary.opacity(0.12))
+                        .cornerRadius(20)
+                    if !Account.shared.isSignedIn {
+                        Text(L10n.tr("comments.signInHint", fallback: "Sign in to join the conversation"))
+                            .font(.caption2).foregroundColor(.secondary)
+                            .padding(.leading, 16)
+                            .allowsHitTesting(false)
+                    }
+                }
+                if store.sending {
+                    Spinner(size: 18).padding(.horizontal, 6)
+                } else {
+                    Button {
+                        let text = draft
+                        draft = ""
+                        Task {
+                            await store.post(text)
+                            if store.postError != nil { draft = text }
+                        }
+                    } label: {
+                        Image(systemName: "arrow.up.circle.fill")
+                            .font(.system(size: 26))
+                            .foregroundColor(draft.isEmpty ? Color.secondary : Color(UIColor.systemBlue))
+                    }
+                    .disabled(draft.isEmpty)
+                }
+            }
+            .padding(.horizontal, 16).padding(.vertical, 8)
+            if let failure = store.postError {
+                Text(failure).font(.caption2).foregroundColor(.red)
+                    .frame(maxWidth: .infinity).padding(.bottom, 4)
+            }
+        }
+        .background(Color(UIColor.systemBackground).edgesIgnoringSafeArea(.bottom))
+        .cornerRadius(16)
+        .onAppear { Task { await store.load(videoId: videoId) } }
+    }
+}
+
+/// One comment: avatar, author · time, text, like/dislike and reply count.
+struct CommentRow: View {
+    let comment: CommentItem
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .top, spacing: 10) {
+                if let url = comment.avatar {
+                    RemoteThumbnail(url: url)
+                        .frame(width: 32, height: 32).clipShape(Circle())
+                } else {
+                    Circle().fill(Color.accentColor.opacity(0.2))
+                        .frame(width: 32, height: 32)
+                        .overlay(Text(String(comment.author.prefix(1)).uppercased())
+                            .font(.caption.bold()).foregroundColor(.accentColor))
+                }
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(spacing: 4) {
+                        Text(comment.author).font(.caption.bold()).foregroundColor(.primary)
+                        if comment.isCreator {
+                            Image(systemName: "checkmark.seal.fill")
+                                .font(.caption2).foregroundColor(.secondary)
+                        }
+                        Text(comment.published).font(.caption2).foregroundColor(.secondary)
+                    }
+                    Text(comment.text).font(.subheadline).foregroundColor(.primary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    HStack(spacing: 18) {
+                        HStack(spacing: 4) {
+                            Image(systemName: "hand.thumbsup").font(.caption).foregroundColor(.secondary)
+                            if !comment.likes.isEmpty {
+                                Text(comment.likes).font(.caption2).foregroundColor(.secondary)
+                            }
+                        }
+                        Image(systemName: "hand.thumbsdown").font(.caption).foregroundColor(.secondary)
+                        if !comment.replyCount.isEmpty {
+                            HStack(spacing: 3) {
+                                Text("\(comment.replyCount) \(L10n.tr("comments.replies", fallback: "replies"))")
+                                    .font(.caption).foregroundColor(.secondary)
+                                Image(systemName: "chevron.down").font(.caption2).foregroundColor(.secondary)
+                            }
+                        }
+                    }.padding(.top, 2)
+                }
+            }
+        }
+    }
+}

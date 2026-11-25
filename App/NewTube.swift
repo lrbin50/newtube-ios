@@ -452,6 +452,7 @@ struct FullScreenPlayerView: View {
     @State private var disliked = false
     @State private var subscribed = false
     @State private var didLoadMeta = false
+    @State private var showComments = false
     // iOS 14 only reliably presents one sheet per view, so settings and the
     // playlist picker share a single attachment keyed by an enum.
     @State private var activeSheet: ActiveSheet?
@@ -503,6 +504,23 @@ struct FullScreenPlayerView: View {
                     }
                     .padding().background(Color.black.opacity(0.75)).cornerRadius(10)
                     .padding()
+                }
+
+                // Bottom-half comments overlay: the player stays visible on
+                // top while the panel slides up, like the Android app.
+                if showComments {
+                    VStack(spacing: 0) {
+                        Spacer(minLength: 0)
+                        CommentsPanel(videoId: video.id) {
+                            withAnimation(.easeIn(duration: 0.2)) { showComments = false }
+                        }
+                        .frame(height: landscape
+                                ? geo.size.height * 0.72
+                                : geo.size.height * 0.58)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .transition(.move(edge: .bottom))
+                    .zIndex(10)
                 }
             }
         }
@@ -690,8 +708,10 @@ struct FullScreenPlayerView: View {
                 }
             }
 
-            // Comments row with count.
-            Button(action: openWeb) {
+            // Comments row opens the bottom-half comments panel in place.
+            Button {
+                withAnimation(.easeOut(duration: 0.25)) { showComments = true }
+            } label: {
                 HStack {
                     Image(systemName: "bubble.left").foregroundColor(.primary)
                     Text(L10n.tr("common.comments")).foregroundColor(.primary)
