@@ -350,7 +350,7 @@ struct FeedCard: View {
     /// Feed payload (especially home `tileRenderer`) often has no avatar; fall
     /// back to the on-demand resolved one, then to the initial placeholder.
     private var resolvedAvatar: URL? {
-        video.avatarURL ?? avatars.avatars[video.id]
+        video.avatarURL ?? avatars.avatar(channel: video.channel, forVideo: video.id)
     }
 
     var body: some View {
@@ -397,7 +397,7 @@ struct FeedCard: View {
             }
         }
         .onAppear {
-            if video.avatarURL == nil { avatars.load(video.id) }
+            if video.avatarURL == nil { avatars.load(video: video.id, channel: video.channel) }
         }
     }
 }
