@@ -96,6 +96,18 @@ struct FeedChannel: Identifiable, Equatable {
         let parsed = Self.extractChannels(json)
         if !parsed.isEmpty { channels = parsed }
         else if browseId == "FEsubscriptions" { channels = Self.channelsFromVideos(page.videos) }
+        resolveChannelAvatars()
+    }
+
+    /// Kick off deferred avatar resolution for the channel strip once videos are
+    /// available. Runs on low-priority tasks via ChannelAvatarStore so it never
+    /// slows down the video grid; results are shared with the home feed.
+    private func resolveChannelAvatars() {
+        guard !videos.isEmpty else { return }
+        for channel in channels {
+            let sample = videos.first { $0.channel == channel.name }?.id
+            ChannelAvatarStore.shared.load(channel: channel.name, sampleVideoID: sample)
+        }
     }
 
     func loadSearch(query: String) async {
