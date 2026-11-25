@@ -16,31 +16,73 @@ struct VideoMeta {
     var comments: String?
 }
 
-/// Supplies real channel avatars for feed cards. Home `tileRenderer` payloads
-/// carry no avatar, so this resolves one on demand via the anonymous TV `next`
-/// endpoint (same one `Meta.load` uses), caches by video id, and coalesces
-/// concurrent requests for the same video. Failures degrade to the initial
+/// Supplies real channel avatars across the whole app. Feed payloads (`tileRenderer`,
+/// `lockupViewModel`) carry no avatar, so this resolves one on demand via the
+/// anonymous TV `next` endpoint (same one `Meta.load` uses) and caches it by both
+/// channel name and video id. Because the cache is keyed by channel NAME too, an
+/// avatar already resolved on the home feed is instantly reused by the
+/// subscriptions strip/cards with zero extra network requests. Concurrent
+/// lookups for the same key are coalesced; failures degrade to the initial
 /// placeholder and are not retried during the session.
 @MainActor final class ChannelAvatarStore: ObservableObject {
     static let shared = ChannelAvatarStore()
 
-    /// video id -> resolved avatar URL (only successful lookups are stored).
+    /// channel name -> resolved avatar URL (shared between home + subscriptions).
+    @Published private(set) var byChannel: [String: URL] = [:]
+    /// video id -> resolved avatar URL (fallback when the channel name is unknown).
     @Published private(set) var avatars: [String: URL] = [:]
-    private var attempted = Set<String>()
-    private var inflight: [String: Task<Void, Never>] = [:]
 
-    /// Requests the avatar once per id. Safe to call from every card's
-    /// `.onAppear`; duplicates and resolved ids are ignored.
-    func load(_ id: String) {
-        guard avatars[id] == nil, !attempted.contains(id), inflight[id] == nil else { return }
-        attempted.insert(id)
+    private var attemptedVideos = Set<String>()
+    private var attemptedChannels = Set<String>()
+    private var inflightVideos: [String: Task<Void, Never>] = [:]
+    private var inflightChannels: [String: Task<Void, Never>] = [:]
+
+    /// Feed card lookup by video id. If the channel name is known we first reuse
+    /// a previously resolved avatar, and after resolving we also index it by
+    /// name so every other card/chip of that channel benefits immediately.
+    func load(video id: String, channel: String? = nil) {
+        if let name = channel, let cached = byChannel[name] {
+            if avatars[id] == nil { avatars[id] = cached }
+            return
+        }
+        guard avatars[id] == nil, !attemptedVideos.contains(id), inflightVideos[id] == nil else { return }
+        attemptedVideos.insert(id)
         let task = Task(priority: .utility) { [weak self] in
             let url = await Meta.channelAvatar(for: id)
             guard let self = self else { return }
-            if let url = url { self.avatars[id] = url }
-            self.inflight[id] = nil
+            if let url = url {
+                self.avatars[id] = url
+                if let name = channel { self.byChannel[name] = url }
+            }
+            self.inflightVideos[id] = nil
         }
-        inflight[id] = task
+        inflightVideos[id] = task
+    }
+
+    /// Subscription chip lookup by channel name. A representative video id is
+    /// used only for the `next` request; results are shared with every other
+    /// surface. Safe to call from every chip's `.onAppear`.
+    func load(channel name: String, sampleVideoID: String?) {
+        if byChannel[name] != nil { return }
+        guard !name.isEmpty, !attemptedChannels.contains(name), inflightChannels[name] == nil else { return }
+        guard let id = sampleVideoID, id.count == 11 else { return } // not ready yet; retry on next appearance
+        attemptedChannels.insert(name)
+        let task = Task(priority: .utility) { [weak self] in
+            let url = await Meta.channelAvatar(for: id)
+            guard let self = self else { return }
+            if let url = url {
+                self.byChannel[name] = url
+                self.avatars[id] = url
+            }
+            self.inflightChannels[name] = nil
+        }
+        inflightChannels[name] = task
+    }
+
+    /// Synchronous read used by views to pick the best available avatar.
+    func avatar(channel: String?, forVideo id: String) -> URL? {
+        if let name = channel, let url = byChannel[name] { return url }
+        return avatars[id]
     }
 }
 
