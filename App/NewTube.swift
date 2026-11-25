@@ -36,40 +36,15 @@ struct RootView: View {
 
     var body: some View {
         TabView(selection: $selection) {
-            BrowseView()
-                .tabItem { Label(L10n.tr("tab.home"), systemImage: "house.fill") }.tag(0)
-            ShortsView()
-                .tabItem { Label(L10n.tr("tab.shorts"), systemImage: "play.rectangle.fill") }.tag(1)
-            BrowseView()
-                .tabItem { Label(L10n.tr("tab.subscriptions"), systemImage: "rectangle.stack") }.tag(2)
-            LibraryView()
-                .tabItem {
-                    // Signed-in: show the real Google account photo.
-                    if let image = account.avatarImage {
-                        Image(uiImage: image)
-                    } else {
-                        Image(systemName: "person.crop.circle")
-                    }
-                    Text(L10n.tr("tab.you"))
-                }.tag(3)
+            homeTab
+            shortsTab
+            subsTab
+            youTab
         }
         // Rebuild the tree when the language changes so every L10n.tr() call
         // re-resolves; environment objects survive the rebuild.
         .id(l10n.language)
-        // Floating bottom-right mini window while the player is minimized;
-        // playback keeps running on top of every tab. (overlay(alignment:) is
-        // iOS 15+, so the alignment is built with spacer stacks for iOS 14.)
-        .overlay(
-            HStack {
-                Spacer()
-                VStack {
-                    Spacer()
-                    if playback.minimized, let video = playback.current {
-                        MiniPlayerView(video: video)
-                    }
-                }
-            }
-        )
+        .overlay(miniPlayerOverlay)
         .onAppear {
             browser.play = { playback.open($0) }
         }
@@ -84,8 +59,7 @@ struct RootView: View {
         // Any video being opened takes over the whole screen. When the player
         // minimizes into the mini window the cover releases the full-screen
         // page by yielding a nil item.
-        .fullScreenCover(item: Binding(get: { playback.minimized ? nil : playback.current },
-                                       set: { _ in })) { video in
+        .fullScreenCover(item: playerBinding) { video in
             FullScreenPlayerView(video: video)
                 .environmentObject(library)
                 .environmentObject(playback)
@@ -95,6 +69,62 @@ struct RootView: View {
             Alert(title: Text("NewTube"), message: Text(playback.message ?? ""),
                   dismissButton: .default(Text(L10n.tr("common.ok"))))
         }
+    }
+
+    private var homeTab: some View {
+        BrowseView()
+            .tabItem { Label(L10n.tr("tab.home"), systemImage: "house.fill") }.tag(0)
+    }
+
+    private var shortsTab: some View {
+        ShortsView()
+            .tabItem { Label(L10n.tr("tab.shorts"), systemImage: "play.rectangle.fill") }.tag(1)
+    }
+
+    private var subsTab: some View {
+        BrowseView()
+            .tabItem { Label(L10n.tr("tab.subscriptions"), systemImage: "rectangle.stack") }.tag(2)
+    }
+
+    private var youTab: some View {
+        LibraryView()
+            .tabItem { youTabContent }.tag(3)
+    }
+
+    @ViewBuilder
+    private var youTabContent: some View {
+        // Signed-in: show the real Google account photo.
+        if let image = account.avatarImage {
+            Image(uiImage: image)
+        } else {
+            Image(systemName: "person.crop.circle")
+        }
+        Text(L10n.tr("tab.you"))
+    }
+
+    /// Floating bottom-right mini window while the player is minimized;
+    /// playback keeps running on top of every tab. (overlay(alignment:) is
+    /// iOS 15+, so the alignment is built with spacer stacks for iOS 14.)
+    private var miniPlayerOverlay: some View {
+        HStack {
+            Spacer()
+            VStack {
+                Spacer()
+                miniPlayer
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var miniPlayer: some View {
+        if playback.minimized, let video = playback.current {
+            MiniPlayerView(video: video)
+        }
+    }
+
+    private var playerBinding: Binding<Video?> {
+        Binding(get: { playback.minimized ? nil : playback.current },
+                set: { _ in })
     }
 }
 

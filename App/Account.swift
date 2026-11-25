@@ -190,11 +190,6 @@ enum AccountError: LocalizedError {
     private let fallbackId = "861556708454-d6dlm3lh05idd8npek18k6be8ba3oc68.apps.googleusercontent.com"
     private let fallbackSecret = "SboVhoG9s0rNafixCSGGKXAT"
 
-    init() {
-        tokens = load()
-        isSignedIn = tokens != nil
-    }
-
     // MARK: - Sign-in flow
 
     /// Step 1: obtain a user code the person enters at verificationURL.
