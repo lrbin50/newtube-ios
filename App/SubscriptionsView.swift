@@ -8,6 +8,7 @@ struct SubscriptionsView: View {
     @EnvironmentObject var playback: Playback
     @ObservedObject private var account = Account.shared
     @ObservedObject private var store = SubscriptionsStore.shared
+    @ObservedObject private var avatars = ChannelAvatarStore.shared
     @State private var showSignIn = false
     @State private var showSearch = false
     @State private var query = ""
@@ -118,14 +119,21 @@ struct SubscriptionsView: View {
         .padding(.bottom, 8)
     }
 
+    /// A representative video id for a channel, used only to resolve its avatar
+    /// via the anonymous `next` endpoint when the feed did not carry one.
+    private func sampleVideoID(for channelName: String) -> String? {
+        store.videos.first { $0.channel == channelName }?.id
+    }
+
     @ViewBuilder
     private func channelChip(id: String, name: String, url: URL?) -> some View {
         let selected = store.selectedChannelId == id
+        let resolved = url ?? avatars.byChannel[name]
         Button { Task { await store.select(id) } } label: {
             VStack(spacing: 5) {
                 Group {
-                    if let url {
-                        RemoteThumbnail(url: url)
+                    if let resolved {
+                        RemoteThumbnail(url: resolved)
                             .frame(width: 46, height: 46).clipped().clipShape(Circle())
                     } else if id == "all" {
                         Circle().fill(Color(UIColor.secondarySystemFill))
@@ -148,6 +156,14 @@ struct SubscriptionsView: View {
             }
         }
         .buttonStyle(.plain)
+        .onAppear {
+            // Avatar resolution is deferred to a low-priority task so the video
+            // grid (and its thumbnails) loads first. Reuses any avatar already
+            // resolved on the home feed via the shared ChannelAvatarStore.
+            if id != "all", resolved == nil {
+                avatars.load(channel: name, sampleVideoID: sampleVideoID(for: name))
+            }
+        }
     }
 
     private func submitSearch() {
