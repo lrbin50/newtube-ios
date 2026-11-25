@@ -6,6 +6,9 @@ import Foundation
 struct VideoMeta {
     var author: String?
     var authorURL: URL?
+    var channelID: String?
+    var avatarURL: URL?
+    var bannerURL: URL?
     var views: String?
     var likes: String?
     var published: String?
@@ -54,7 +57,74 @@ enum Meta {
                 if let raw = renderer["ownerChannelName"] as? String { meta.author = meta.author ?? raw }
             }
         }
+        // TV `next` carries the real channel avatar, channel id and banner.
+        // The Android client's next response no longer has videoOwnerRenderer,
+        // so use TVHTML5 here (small payload, no account required).
+        if let next = try? await post("next", body: [
+            "context": ["client": [
+                "clientName": "TVHTML5", "clientVersion": "7.20261123.19.00",
+                "hl": "en", "gl": "US", "platform": "TV"
+            ]],
+            "videoId": video.id
+        ]) {
+            applyChannelInfo(next, to: &meta)
+        }
         return meta
+    }
+
+    /// Deep-walks the `next` response for the video owner (avatar, channel id,
+    /// subscriber count) and the channel banner. Structure differs across
+    /// rollouts, so accept both the classic `videoOwnerRenderer` and the newer
+    /// `compactChannelBarViewModel` shapes.
+    private static func applyChannelInfo(_ json: [String: Any], to meta: inout VideoMeta) {
+        func textOf(_ value: Any?) -> String {
+            guard let value else { return "" }
+            if let dict = value as? [String: Any] {
+                if let simple = dict["simpleText"] as? String { return simple }
+                if let runs = dict["runs"] as? [[String: Any]] {
+                    return runs.compactMap { $0["text"] as? String }.joined()
+                }
+            }
+            return ""
+        }
+        func largestURL(_ value: Any?) -> URL? {
+            guard let dict = value as? [String: Any],
+                  let thumbs = dict["thumbnails"] as? [[String: Any]] else { return nil }
+            let best = thumbs.max { a, b in
+                (a["width"] as? Int ?? 0) < (b["width"] as? Int ?? 0)
+            }
+            guard let raw = best?["url"] as? String else { return nil }
+            return URL(string: raw)
+        }
+        func walk(_ value: Any) {
+            if let dict = value as? [String: Any] {
+                if let owner = dict["videoOwnerRenderer"] as? [String: Any] {
+                    if meta.avatarURL == nil { meta.avatarURL = largestURL(owner["thumbnail"]) }
+                    if meta.channelID == nil,
+                       let endpoint = owner["navigationEndpoint"] as? [String: Any],
+                       let browse = endpoint["browseEndpoint"] as? [String: Any],
+                       let cid = browse["browseId"] as? String, cid.hasPrefix("UC") {
+                        meta.channelID = cid
+                    }
+                    if meta.subscribers == nil {
+                        let subs = textOf(owner["subscriberCountText"])
+                        if !subs.isEmpty { meta.subscribers = subs }
+                    }
+                    if meta.author == nil {
+                        let name = textOf(owner["title"])
+                        if !name.isEmpty { meta.author = name }
+                    }
+                }
+                if let header = dict["channelHeaderRenderer"] as? [String: Any],
+                   meta.bannerURL == nil {
+                    meta.bannerURL = largestURL(header["banner"])
+                }
+                for child in dict.values { walk(child) }
+            } else if let array = value as? [Any] {
+                for child in array { walk(child) }
+            }
+        }
+        walk(json)
     }
 
     /// A handful of related videos, parsed from the public search endpoint.

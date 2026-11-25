@@ -497,8 +497,10 @@ struct FullScreenPlayerView: View {
     @State private var subscribed = false
     @State private var didLoadMeta = false
     @State private var showComments = false
-    // iOS 14 only reliably presents one sheet per view, so settings and the
-    // playlist picker share a single attachment keyed by an enum.
+    @State private var showSettings = false
+    @State private var showChannel = false
+    // iOS 14 only reliably presents one sheet per view, so the playlist
+    // picker is the only remaining sheet (settings is now a floating menu).
     @State private var activeSheet: ActiveSheet?
     @State private var playhead: Double = 0
     @State private var duration: Double = 0
@@ -566,6 +568,21 @@ struct FullScreenPlayerView: View {
                     .transition(.move(edge: .bottom))
                     .zIndex(10)
                 }
+
+                // Gear menu: compact panel anchored just below the gear icon,
+                // with a tap-away layer so it closes like a native popover.
+                if showSettings {
+                    ZStack(alignment: .topTrailing) {
+                        // Tap-away layer sits behind the panel, so taps on
+                        // menu rows never close it by accident.
+                        Color.black.opacity(0.001)
+                            .onTapGesture { showSettings = false }
+                        PlayerSettingsPopover { showSettings = false }
+                            .padding(.top, 4).padding(.trailing, 12)
+                    }
+                    .zIndex(20)
+                    .transition(.opacity)
+                }
             }
         }
         // Defer detail/network-heavy work until the stream is ready, so it does
@@ -581,14 +598,23 @@ struct FullScreenPlayerView: View {
         .sheet(item: $webPlayer) { video in WebPlayer(url: video.watchURL).ignoresSafeArea() }
         .sheet(item: $activeSheet) { sheet in
             switch sheet {
-            case .settings: PlayerSettingsSheet()
             case .save: SaveToPlaylistSheet(video: video)
             }
+        }
+        .sheet(isPresented: $showChannel) {
+            ChannelProfileView(
+                channelID: meta.channelID,
+                name: meta.author,
+                avatarURL: meta.avatarURL,
+                bannerURL: meta.bannerURL,
+                subscribers: meta.subscribers
+            )
+            .environmentObject(playback)
         }
     }
 
     enum ActiveSheet: Identifiable {
-        case settings, save
+        case save
         var id: Self { self }
     }
 
@@ -608,7 +634,9 @@ struct FullScreenPlayerView: View {
                 controlButton(system: subtitles ? "captions.bubble.fill" : "captions.bubble", size: 16) {
                     subtitles.toggle()
                 }
-                controlButton(system: "gearshape", size: 16) { activeSheet = .settings }
+                controlButton(system: "gearshape", size: 16) {
+                    withAnimation(.easeOut(duration: 0.18)) { showSettings.toggle() }
+                }
             }
             .padding(.horizontal, 10)
             .padding(.top, 8)
@@ -617,9 +645,16 @@ struct FullScreenPlayerView: View {
 
             if !playback.resolving {
                 HStack(spacing: 10) {
-                    controlButton(system: playback.playing ? "pause.fill" : "play.fill", size: 15) {
+                    Button {
                         if playback.playing { playback.player.pause() } else { playback.resume() }
+                    } label: {
+                        Image(systemName: playback.playing ? "pause.fill" : "play.fill")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundColor(.white)
+                            .frame(width: 22, height: 22)
+                            .background(Circle().fill(Color.black.opacity(0.6)))
                     }
+                    .buttonStyle(.plain)
                     Text(timeString(playhead))
                         .font(.system(size: 11, weight: .semibold, design: .monospaced))
                         .foregroundColor(.white)
@@ -726,21 +761,28 @@ struct FullScreenPlayerView: View {
                 }
             }
 
-            // Channel row with subscriber count.
+            // Channel row with real avatar, subscriber count, and a tap target
+            // that opens the creator's channel page.
             HStack(spacing: 12) {
-                Circle().fill(Color.accentColor.opacity(0.2))
-                    .overlay(Text((meta.author ?? "?").prefix(1).uppercased())
-                        .font(.headline).foregroundColor(.accentColor))
-                    .frame(width: 44, height: 44)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(meta.author ?? L10n.tr("common.channel")).font(.subheadline.bold())
-                    if let subs = meta.subscribers {
-                        Text("\(subs) \(L10n.tr("common.subscribers"))")
-                            .font(.caption).foregroundColor(.secondary)
-                    } else {
-                        Text(L10n.tr("common.channel")).font(.caption).foregroundColor(.secondary)
+                Button { showChannel = true } label: {
+                    ChannelAvatarView(name: meta.author, url: meta.avatarURL, size: 44)
+                }
+                .buttonStyle(.plain)
+                Button { showChannel = true } label: {
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack(spacing: 3) {
+                            Text(meta.author ?? L10n.tr("common.channel")).font(.subheadline.bold())
+                            Image(systemName: "chevron.right").font(.system(size: 11)).foregroundColor(.secondary)
+                        }
+                        if let subs = meta.subscribers {
+                            Text("\(subs) \(L10n.tr("common.subscribers"))")
+                                .font(.caption).foregroundColor(.secondary)
+                        } else {
+                            Text(L10n.tr("common.channel")).font(.caption).foregroundColor(.secondary)
+                        }
                     }
                 }
+                .buttonStyle(.plain)
                 Spacer()
                 Button { subscribed.toggle() } label: {
                     Text(subscribed ? L10n.tr("common.subscribed") : L10n.tr("common.subscribe"))
@@ -856,96 +898,6 @@ struct FullScreenPlayerView: View {
                 playback.message = "Could not send to TV. " + error.localizedDescription
             }
         }
-    }
-}
-
-/// Bottom settings panel opened from the player's gear icon.
-/// Mirrors the YouTube player sheet: quality, subtitles, speed, PiP, more.
-struct PlayerSettingsSheet: View {
-    @Environment(\.presentationMode) private var presentation
-    @AppStorage("playerQuality") private var quality = "auto"
-    @AppStorage("playerSubtitles") private var subtitles = false
-    @AppStorage("speed") private var speed = 1.0
-
-    private let speeds: [Double] = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2]
-
-    var body: some View {
-        NavigationView {
-            List {
-                Section {
-                    HStack {
-                        Label(L10n.tr("player.quality"), systemImage: "slider.horizontal.3")
-                        Spacer()
-                        Text(qualityLabel).foregroundColor(.secondary)
-                    }
-                    Toggle(isOn: $subtitles) {
-                        Label(L10n.tr("player.subtitles"), systemImage: "captions.bubble")
-                    }
-                    HStack {
-                        Label(L10n.tr("player.speed"), systemImage: "speedometer")
-                        Spacer()
-                        Picker("", selection: $speed) {
-                            ForEach(speeds, id: \.self) { value in
-                                Text(speedLabel(value)).tag(value)
-                            }
-                        }
-                        .pickerStyle(MenuPickerStyle())
-                        .labelsHidden()
-                    }
-                    Button { presentation.wrappedValue.dismiss() } label: {
-                        Label(L10n.tr("player.pip"), systemImage: "rectangle.on.rectangle")
-                    }
-                    NavigationLink(destination: moreView) {
-                        Label(L10n.tr("player.more"), systemImage: "gearshape.2")
-                    }
-                }
-            }
-            .navigationTitle(L10n.tr("player.settings"))
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button(L10n.tr("common.ok")) { presentation.wrappedValue.dismiss() }
-                }
-            }
-        }
-        .navigationViewStyle(StackNavigationViewStyle())
-    }
-
-    private var qualityLabel: String {
-        switch quality {
-        case "1080": return "1080p"
-        case "720": return "720p"
-        case "480": return "480p"
-        case "360": return "360p"
-        default: return L10n.tr("player.auto")
-        }
-    }
-
-    private func speedLabel(_ value: Double) -> String {
-        value == 1 ? L10n.tr("player.normal") : "\(value)×"
-    }
-
-    private var moreView: some View {
-        Form {
-            Section(header: Text(L10n.tr("player.quality"))) {
-                ForEach(["auto", "1080", "720", "480", "360"], id: \.self) { q in
-                    Button {
-                        quality = q
-                    } label: {
-                        HStack {
-                            Text(q == "auto" ? L10n.tr("player.auto") : "\(q)p")
-                            Spacer()
-                            if quality == q { Image(systemName: "checkmark").accentColor(.accentColor) }
-                        }
-                    }
-                    .foregroundColor(.primary)
-                }
-            }
-            Section(header: Text(L10n.tr("player.subtitles"))) {
-                Toggle(L10n.tr("player.off"), isOn: $subtitles)
-            }
-        }
-        .navigationTitle(L10n.tr("player.more"))
     }
 }
 
