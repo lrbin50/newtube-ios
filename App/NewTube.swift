@@ -513,6 +513,9 @@ struct FullScreenPlayerView: View {
     @State private var duration: Double = 0
     @State private var seeking = false
     @State private var ticker: Timer?
+    // Controls fade out a few seconds into playback and come back on any tap.
+    @State private var controlsVisible = true
+    @State private var controlsHideTimer: Timer?
     @AppStorage("playerQuality") private var quality = "auto"
     @AppStorage("playerSubtitles") private var subtitles = false
     @AppStorage("speed") private var speed = 1.0
@@ -535,19 +538,24 @@ struct FullScreenPlayerView: View {
                     ZStack {
                         PlayerSurface(player: playback.player)
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .contentShape(Rectangle())
+                            .onTapGesture { revealControls() }
                         if playback.resolving { ResolvingOverlay(thumbnail: video.thumbnailURL) }
-                        playerControls
+                        playerControls(landscape: true)
                     }
                 } else {
-                    // Portrait: player on top, details scrolling underneath.
-                    ScrollView {
-                        VStack(spacing: 0) {
-                            ZStack {
-                                PlayerSurface(player: playback.player)
-                                    .frame(height: geo.size.width * 9 / 16)
-                                if playback.resolving { ResolvingOverlay(thumbnail: video.thumbnailURL) }
-                                playerControls
-                            }
+                    // Portrait: the player is pinned at the top and never
+                    // scrolls; only the detail list underneath moves.
+                    VStack(spacing: 0) {
+                        ZStack {
+                            PlayerSurface(player: playback.player)
+                                .frame(height: geo.size.width * 9 / 16)
+                                .contentShape(Rectangle())
+                                .onTapGesture { revealControls() }
+                            if playback.resolving { ResolvingOverlay(thumbnail: video.thumbnailURL) }
+                            playerControls(landscape: false)
+                        }
+                        ScrollView {
                             detail
                         }
                     }
@@ -603,10 +611,17 @@ struct FullScreenPlayerView: View {
         .onAppear {
             if !playback.resolving { load() }
             startTicker()
+            revealControls()
         }
-        .onDisappear { ticker?.invalidate() }
+        .onDisappear {
+            ticker?.invalidate()
+            controlsHideTimer?.invalidate()
+        }
         .onChange(of: playback.resolving) { resolving in
             if !resolving { load() }
+        }
+        .onChange(of: playback.playing) { playing in
+            if playing { scheduleControlsHide() } else { revealControls() }
         }
         .sheet(item: $webPlayer) { video in WebPlayer(url: video.watchURL).ignoresSafeArea() }
         .sheet(item: $activeSheet) { sheet in
@@ -634,7 +649,7 @@ struct FullScreenPlayerView: View {
     /// A single, high-contrast control layer. AVPlayerViewController's grey
     /// controls are disabled, so no second set of buttons can overlap ours
     /// while the stream is resolving.
-    private var playerControls: some View {
+    private func playerControls(landscape: Bool) -> some View {
         VStack(spacing: 0) {
             HStack(spacing: 8) {
                 // Collapse into the bottom-right mini window (playback keeps
@@ -659,6 +674,7 @@ struct FullScreenPlayerView: View {
             if !playback.resolving {
                 HStack(spacing: 10) {
                     Button {
+                        revealControls()
                         if playback.playing { playback.player.pause() } else { playback.resume() }
                     } label: {
                         Image(systemName: playback.playing ? "pause.fill" : "play.fill")
@@ -674,22 +690,61 @@ struct FullScreenPlayerView: View {
                         .shadow(radius: 1)
                     ThinProgressSlider(value: $playhead, in: 0...max(duration, 1)) { editing in
                         self.seeking = editing
-                        if !editing { self.playback.seek(self.playhead) }
+                        if editing { self.revealControls() }
+                        if !editing {
+                            self.playback.seek(self.playhead)
+                            self.revealControls()
+                        }
                     }
                     Text(timeString(duration))
                         .font(.system(size: 11, weight: .semibold, design: .monospaced))
                         .foregroundColor(.white)
                         .shadow(radius: 1)
+                    // Full screen: rotate into landscape, or back if already there.
+                    controlButton(system: "arrow.up.left.and.arrow.down.right", size: 14) {
+                        toggleFullscreen(landscape: landscape)
+                    }
                 }
                 .padding(.horizontal, 12)
                 .padding(.bottom, 10)
             }
         }
+        .opacity(controlsVisible ? 1 : 0)
+        .allowsHitTesting(controlsVisible)
+    }
+
+    /// Bring the controls back and restart the auto-hide countdown.
+    private func revealControls() {
+        withAnimation(.easeInOut(duration: 0.18)) { controlsVisible = true }
+        scheduleControlsHide()
+    }
+
+    /// Hide the controls after a short idle period while playback runs.
+    private func scheduleControlsHide() {
+        controlsHideTimer?.invalidate()
+        guard playback.playing else { return }
+        controlsHideTimer = Timer.scheduledTimer(withTimeInterval: 3, repeats: false) { _ in
+            DispatchQueue.main.async {
+                guard self.playback.playing, !self.seeking, !self.showSettings else { return }
+                withAnimation(.easeOut(duration: 0.25)) { self.controlsVisible = false }
+            }
+        }
+    }
+
+    /// Force the interface into landscape for full screen (or back to
+    /// portrait). The hosting controller follows the app's Info.plist
+    /// orientations, so a device-orientation change plus a rotation attempt
+    /// is enough on iOS 14. The `landscape` flag reflects the current layout.
+    private func toggleFullscreen(landscape: Bool) {
+        let target: UIInterfaceOrientation = landscape ? .portrait : .landscapeRight
+        UIDevice.current.setValue(target.rawValue, forKey: "orientation")
+        UIViewController.attemptRotationToDeviceOrientation()
+        revealControls()
     }
 
     private func controlButton(system: String, size: CGFloat,
                                action: @escaping () -> Void) -> some View {
-        Button(action: action) {
+        Button(action: { revealControls(); action() }) {
             Image(systemName: system)
                 .font(.system(size: size, weight: .semibold))
                 .foregroundColor(.white)
