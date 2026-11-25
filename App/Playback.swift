@@ -29,6 +29,12 @@ import SwiftUI
     private var openStartedAt: Date?
     /// Restores normal buffering a moment after the first frame is up.
     private var bufferTask: Task<Void, Never>?
+    /// Retries already spent healing the current video's stream (403 / stall).
+    private var reloads: [String: Int] = [:]
+    /// Fires if an item stays stuck in .waitingToPlay long enough to be a stall.
+    private var stallTask: Task<Void, Never>?
+    private let maxReloads = 2
+    private let stallSeconds: Double = 8
     private var tick: Any?
     private var lastCheckpoint = -1
     private let defaults = UserDefaults.standard
@@ -39,7 +45,14 @@ import SwiftUI
         stateObserver = player.observe(\.timeControlStatus, options: [.initial, .new]) { [weak self] _, _ in
             Task { @MainActor in
                 guard let self else { return }
-                self.playing = self.player.timeControlStatus == .playing
+                let isPlaying = self.player.timeControlStatus == .playing
+                self.playing = isPlaying
+                // Playing at a usable rate means the stream is healthy — any
+                // pending stall-heal timer is no longer needed.
+                if isPlaying {
+                    self.stallTask?.cancel()
+                    self.stallTask = nil
+                }
             }
         }
         tick = player.addPeriodicTimeObserver(forInterval: CMTime(seconds: 0.5, preferredTimescale: 600), queue: .main) { [weak self] time in
@@ -83,6 +96,8 @@ import SwiftUI
     func open(_ video: Video) {
         close()
         current = video
+        // A deliberate replay of the same video gets a fresh heal budget.
+        reloads[video.id] = 0
         expanded = true
         resolving = true
         openStartedAt = Date()
@@ -172,10 +187,18 @@ import SwiftUI
                     // Community lookups wait for the first frame instead of
                     // competing with stream resolution for bandwidth.
                     self.refreshCommunity()
+                    self.watchStall(item, video: video)
                 case .failed:
                     self.resolving = false
                     self.logStart(video, failed: true)
-                    self.failure = item.error?.localizedDescription ?? "Playback failed."
+                    // A dead/403 URL is healed by dropping the cached address
+                    // and resolving a fresh one, instead of retrying the same
+                    // expired link (SmartTube-CN's 403 self-heal strategy).
+                    if self.shouldReload(video.id) {
+                        self.reload(video)
+                    } else {
+                        self.failure = item.error?.localizedDescription ?? "Playback failed."
+                    }
                 default:
                     break
                 }
@@ -188,6 +211,69 @@ import SwiftUI
                 else { self.next() }
                 self.library.mark(video, seconds: 0)
             }
+        }
+    }
+
+    // MARK: - Stream self-healing
+
+    /// Allow at most `maxReloads` heal attempts per video. The counter resets
+    /// when the video is opened afresh, so replaying later starts clean.
+    private func shouldReload(_ id: String) -> Bool {
+        let used = reloads[id] ?? 0
+        guard used < maxReloads else { return false }
+        reloads[id] = used + 1
+        return true
+    }
+
+    /// Drop the cached (possibly IP-bound / expired) URL and resolve a fresh
+    /// one. AVPlayer is swapped to the new item in place so the user stays on
+    /// the player page. Falls back to the normal YouTubeKit resolver if the
+    /// fast ANDROID client has no fresh direct URL.
+    private func reload(_ video: Video) {
+        guard current?.id == video.id else { return }
+        FastMedia.invalidate(video.id)
+        failure = nil
+        resolving = true
+        openStartedAt = Date()
+        stallTask?.cancel()
+        stallTask = nil
+        print("[Perf] video \(video.id) reloading stream (attempt \(reloads[video.id] ?? 0))")
+        lookup?.cancel()
+        lookup = Task {
+            do {
+                let url = try await Media.source(video)
+                try Task.checkCancellation()
+                guard self.current?.id == video.id else { return }
+                let item = AVPlayerItem(url: url)
+                item.preferredForwardBufferDuration = 0.5
+                item.preferredPeakBitRate = 1_000_000
+                player.replaceCurrentItem(with: item)
+                observe(item, video: video)
+                resume()
+            } catch {
+                guard !Task.isCancelled else { return }
+                resolving = false
+                failure = error.localizedDescription
+            }
+        }
+    }
+
+    /// Detect a long buffer stall (ready but never starts playing) and heal
+    /// it once by re-resolving the URL — mirrors SmartTube's 20/60s buffering
+    /// detector, shortened for a phone connection. Cancelled as soon as the
+    /// player reports it is playing at a usable rate.
+    private func watchStall(_ item: AVPlayerItem, video: Video) {
+        stallTask?.cancel()
+        stallTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: UInt64(stallSeconds * 1_000_000_000))
+            guard !Task.isCancelled,
+                  self.player.currentItem === item,
+                  // Only heal a genuine stall: the player wants to play but
+                  // cannot. A deliberate pause (.paused) must not trigger it.
+                  self.player.timeControlStatus == .waitingToPlayAtSpecifiedRate,
+                  self.current?.id == video.id else { return }
+            print("[Perf] video \(video.id) stalled >\(Int(stallSeconds))s, re-resolving")
+            if self.shouldReload(video.id) { self.reload(video) }
         }
     }
 
@@ -252,6 +338,8 @@ import SwiftUI
         extras?.cancel()
         bufferTask?.cancel()
         bufferTask = nil
+        stallTask?.cancel()
+        stallTask = nil
         openStartedAt = nil
         if let ended { NotificationCenter.default.removeObserver(ended) }
         ended = nil

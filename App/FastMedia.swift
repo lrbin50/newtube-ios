@@ -18,23 +18,60 @@ enum FastMedia {
     private static let apiKey = "AIzaSyA8eiZmM1FaDVjRy-df2KTyQ_vz_yYM39w"
     private static let agent = "com.google.android.youtube/20.10.38 (Linux; U; Android 11) gzip"
 
-    /// Two entries are enough: the video being played plus the next one.
+    /// Keep a rolling window of resolved URLs. A cached hit is the ONLY way to
+    /// skip the /player endpoint's 1-6s server latency, so this is deliberately
+    /// much larger than the old "current + next" two entries.
     private static var cache: [String: (url: URL, at: Date)] = [:]
     /// Resolution already in flight — shared by prewarm and real playback.
     private static var inflight: [String: Task<URL, Error>] = [:]
+    /// FIFO of ids waiting to be warmed. Capped concurrency avoids a flood of
+    /// /player requests while a fast scroll fires dozens of onAppear callbacks.
+    private static var warmQueue: [String] = []
+    private static var warmActive = 0
     private static let lock = NSLock()
-    private static let cacheTTL: TimeInterval = 60 * 60
+    private static let cacheTTL: TimeInterval = 6 * 60 * 60
+    private static let cacheLimit = 30
+    private static let warmLimit = 2
 
     struct Failure: LocalizedError {
         var errorDescription: String? { "Fast stream resolution unavailable." }
     }
 
-    /// Fire-and-forget warm-up from a feed card. Safe to call repeatedly.
-    /// Runs at utility priority so it never competes with scrolling or thumbnails.
+    /// Fire-and-forget warm-up from a feed card. Safe to call repeatedly:
+    /// duplicates are coalesced and only `warmLimit` requests run at once.
+    /// Cards drain in onAppear (top-to-bottom scroll) order, so the videos
+    /// nearest the top of the screen are warmed before ones further down.
     static func prewarm(_ videoID: String) {
-        Task(priority: .utility) {
-            _ = try? await resolve(videoID)
+        lock.lock()
+        guard cache[videoID] == nil, inflight["v:\(videoID)"] == nil,
+              !warmQueue.contains(videoID) else { lock.unlock(); return }
+        warmQueue.append(videoID)
+        let canStart = warmActive < warmLimit
+        if canStart { warmActive += 1 }
+        lock.unlock()
+        if canStart { Task(priority: .utility) { await drainWarmQueue() } }
+    }
+
+    private static func drainWarmQueue() async {
+        while true {
+            lock.lock()
+            guard let id = warmQueue.first else {
+                warmActive -= 1
+                lock.unlock()
+                return
+            }
+            warmQueue.removeFirst()
+            lock.unlock()
+            _ = try? await resolve(id)
         }
+    }
+
+    /// Drop a URL that YouTube rejected (403 / dead stream) so playback can
+    /// re-resolve a fresh one instead of retrying the same expired address.
+    static func invalidate(_ videoID: String) {
+        lock.lock()
+        cache.removeValue(forKey: videoID)
+        lock.unlock()
     }
 
     /// Returns a natively playable direct URL, or throws to fall back.
@@ -81,9 +118,14 @@ enum FastMedia {
     private static func store(_ url: URL, for id: String) {
         lock.lock(); defer { lock.unlock() }
         cache[id] = (url, Date())
-        // Keep the cache small; drop entries older than TTL.
-        if cache.count > 8 {
-            cache = cache.filter { Date().timeIntervalSince($0.value.at) < cacheTTL }
+        guard cache.count > cacheLimit else { return }
+        // LRU by insertion time: expire stale entries first, then evict the
+        // oldest until the window fits. Most-recently resolved URLs stay hot.
+        let now = Date()
+        cache = cache.filter { now.timeIntervalSince($0.value.at) < cacheTTL }
+        if cache.count > cacheLimit {
+            let oldest = cache.sorted { $0.value.at < $1.value.at }.prefix(cache.count - cacheLimit)
+            for key in oldest.map({ $0.key }) { cache.removeValue(forKey: key) }
         }
     }
 

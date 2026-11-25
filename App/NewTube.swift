@@ -11,6 +11,9 @@ import UIKit
 
     init() {
         UserDefaults.standard.register(defaults: ["sponsorBlock": true, "deArrow": false, "showDislikes": false, "speed": 1.0])
+        // Pre-connect DNS/TLS/HTTP2 to youtube.com so the first player request
+        // does not pay for a handshake.
+        LegacyNetwork.warmup()
         let library = Library()
         _library = StateObject(wrappedValue: library)
         _playback = StateObject(wrappedValue: Playback(library: library))

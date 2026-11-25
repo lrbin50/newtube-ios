@@ -29,6 +29,18 @@ private final class URLSessionCancellationBox: @unchecked Sendable {
 }
 
 enum LegacyNetwork {
+    /// All InnerTube traffic shares URLSession.shared, so DNS/TLS/HTTP2
+    /// connections are pooled across feed, player and account requests —
+    /// the iOS equivalent of SmartTube's dedicated long-lived OkHttp client.
+    /// Warming that pool at launch removes a handshake from the first tap.
+    static func warmup() {
+        Task(priority: .utility) {
+            var request = URLRequest(url: URL(string: "https://www.youtube.com/generate_204")!)
+            request.httpMethod = "HEAD"
+            _ = try? await data(for: request)
+        }
+    }
+
     static func data(from url: URL) async throws -> (Data, URLResponse) {
         let box = URLSessionCancellationBox()
         return try await withTaskCancellationHandler {
