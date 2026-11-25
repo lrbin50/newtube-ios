@@ -16,9 +16,75 @@ struct VideoMeta {
     var comments: String?
 }
 
+/// Supplies real channel avatars for feed cards. Home `tileRenderer` payloads
+/// carry no avatar, so this resolves one on demand via the anonymous TV `next`
+/// endpoint (same one `Meta.load` uses), caches by video id, and coalesces
+/// concurrent requests for the same video. Failures degrade to the initial
+/// placeholder and are not retried during the session.
+@MainActor final class ChannelAvatarStore: ObservableObject {
+    static let shared = ChannelAvatarStore()
+
+    /// video id -> resolved avatar URL (only successful lookups are stored).
+    @Published private(set) var avatars: [String: URL] = [:]
+    private var attempted = Set<String>()
+    private var inflight: [String: Task<Void, Never>] = [:]
+
+    /// Requests the avatar once per id. Safe to call from every card's
+    /// `.onAppear`; duplicates and resolved ids are ignored.
+    func load(_ id: String) {
+        guard avatars[id] == nil, !attempted.contains(id), inflight[id] == nil else { return }
+        attempted.insert(id)
+        let task = Task(priority: .utility) { [weak self] in
+            let url = await Meta.channelAvatar(for: id)
+            guard let self = self else { return }
+            if let url = url { self.avatars[id] = url }
+            self.inflight[id] = nil
+        }
+        inflight[id] = task
+    }
+}
+
 enum Meta {
     private static let apiKey = "AIzaSyA8eiZmM1FaDVjRy-df2KTyQ_vz_yYM39w"
     private static let agent = "com.google.android.youtube/20.10.38 (Linux; U; Android 11) gzip"
+
+    /// Lightweight, anonymous avatar lookup for a single video. Reuses the TV
+    /// `next` payload and picks the largest owner thumbnail.
+    static func channelAvatar(for id: String) async -> URL? {
+        guard let json = try? await post("next", body: [
+            "context": ["client": [
+                "clientName": "TVHTML5", "clientVersion": "7.20261123.19.00",
+                "hl": "en", "gl": "US", "platform": "TV"
+            ]],
+            "videoId": id
+        ]) else { return nil }
+        var found: URL?
+        func walk(_ value: Any) {
+            guard found == nil else { return }
+            if let dict = value as? [String: Any] {
+                if let owner = dict["videoOwnerRenderer"] as? [String: Any],
+                   let url = largestThumb(owner["thumbnail"]) {
+                    found = url
+                    return
+                }
+                for child in dict.values { walk(child) }
+            } else if let array = value as? [Any] {
+                for child in array { walk(child) }
+            }
+        }
+        walk(json)
+        return found
+    }
+
+    private static func largestThumb(_ value: Any?) -> URL? {
+        guard let d = value as? [String: Any],
+              let thumbs = d["thumbnails"] as? [[String: Any]] else { return nil }
+        let best = thumbs.max { a, b in
+            (a["width"] as? Int ?? 0) < (b["width"] as? Int ?? 0)
+        }
+        guard let raw = best?["url"] as? String else { return nil }
+        return URL(string: raw)
+    }
 
     static func load(_ video: Video) async -> VideoMeta {
         var meta = VideoMeta()
