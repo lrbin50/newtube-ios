@@ -93,16 +93,15 @@ struct RootView: View {
 
     @ViewBuilder
     private var youTabContent: some View {
-        // Signed-in: show the real Google account photo. The raw UIImage is
-        // 200px, so it MUST be resized/clipped — an unbounded Image inside a
-        // tabItem overflows the tab bar and paints a large blue half-circle
-        // above the bottom bar (tinted blue on the You tab, grey elsewhere).
-        if let image = account.avatarImage {
-            Image(uiImage: image).resizable().scaledToFill()
-                .frame(width: 20, height: 20).clipShape(Circle())
-        } else {
-            Image(systemName: "person.crop.circle")
-        }
+        // iOS 14's UITabBar renders tab images as *templates* at the bitmap's
+        // intrinsic pixel size. A real avatar UIImage (200px, already cropped
+        // to a circle) therefore overflows the tab bar and is painted as a
+        // huge solid circle — blue when selected, translucent grey otherwise —
+        // which shows up as the large half-circle in the bottom-right corner
+        // on every tab. SwiftUI .frame/.clipShape cannot override UITabBarItem.
+        // A system symbol is template-rendered correctly; the full photo is
+        // shown at 54pt in the You tab's title bar instead.
+        Image(systemName: account.isSignedIn ? "person.crop.circle.fill" : "person.crop.circle")
         Text(L10n.tr("tab.you"))
     }
 
@@ -1025,6 +1024,9 @@ struct LibraryView: View {
                             }
                         }
                     }
+                    // Leave a little breathing room below the system status
+                    // bar: a 54pt avatar in a 44pt nav bar sits too high.
+                    .offset(y: 4)
                 }
                 ToolbarItem(placement: .navigationBarTrailing) {
                     HStack(spacing: 16) {
