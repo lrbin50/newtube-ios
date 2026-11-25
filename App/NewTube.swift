@@ -344,7 +344,15 @@ struct BrowseView: View {
 
 struct FeedCard: View {
     @EnvironmentObject var library: Library
+    @ObservedObject private var avatars = ChannelAvatarStore.shared
     let video: FeedVideo
+
+    /// Feed payload (especially home `tileRenderer`) often has no avatar; fall
+    /// back to the on-demand resolved one, then to the initial placeholder.
+    private var resolvedAvatar: URL? {
+        video.avatarURL ?? avatars.avatars[video.id]
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             ZStack(alignment: .bottomTrailing) {
@@ -361,13 +369,8 @@ struct FeedCard: View {
             }
 
             HStack(alignment: .top, spacing: 8) {
-                // Channel avatar (initial in a colored circle).
-                Circle().fill(Color.accentColor.opacity(0.3))
-                    .overlay(
-                        Text((video.channel ?? "?").prefix(1).uppercased())
-                            .font(.system(size: 11, weight: .bold)).foregroundColor(.accentColor)
-                    )
-                    .frame(width: 30, height: 30)
+                // Real channel avatar when available, initial circle otherwise.
+                ChannelAvatarView(name: video.channel, url: resolvedAvatar, size: 30)
 
                 VStack(alignment: .leading, spacing: 3) {
                     Text(video.title).font(.system(size: 13, weight: .medium)).foregroundColor(.primary)
@@ -392,6 +395,9 @@ struct FeedCard: View {
                         .frame(width: 20)
                 }
             }
+        }
+        .onAppear {
+            if video.avatarURL == nil { avatars.load(video.id) }
         }
     }
 }
