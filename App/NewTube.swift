@@ -1458,14 +1458,21 @@ struct PlaylistDetailView: View {
             } else {
                 List(videos) { video in
                     Button { playback.open(video) } label: {
-                        HStack {
+                        VStack(alignment: .leading, spacing: 8) {
                             RemoteThumbnail(url: video.thumbnailURL)
-                                .frame(width: 120, height: 68).clipped()
-                                .clipShape(RoundedRectangle(cornerRadius: 6))
-                            Text(video.title).lineLimit(3).foregroundColor(.primary)
-                            Spacer()
+                                .frame(maxWidth: .infinity)
+                                .aspectRatio(16 / 9, contentMode: .fit)
+                                .clipped().cornerRadius(8)
+                            Text(video.title)
+                                .font(.system(size: 13, weight: .medium))
+                                .foregroundColor(.primary)
+                                .lineLimit(2)
+                                .multilineTextAlignment(.leading)
                         }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.vertical, 6)
                     }
+                    .buttonStyle(.plain)
                     .contextMenu {
                         Button(L10n.tr("you.addToQueue")) { playback.enqueue(video) }
                         Button(library.saved.contains(where: { $0.id == video.id })
@@ -1474,6 +1481,7 @@ struct PlaylistDetailView: View {
                         }
                         ShareButton(url: video.watchURL)
                     }
+                    .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
                 }.listStyle(.plain)
             }
         }
