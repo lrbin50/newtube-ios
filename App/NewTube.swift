@@ -914,6 +914,13 @@ struct ThinProgressSlider: UIViewRepresentable {
     var range: ClosedRange<Double>
     var onEditingChanged: (Bool) -> Void
 
+    init(value: Binding<Double>, in range: ClosedRange<Double>,
+         onEditingChanged: @escaping (Bool) -> Void) {
+        self._value = value
+        self.range = range
+        self.onEditingChanged = onEditingChanged
+    }
+
     func makeUIView(context: Context) -> UISlider {
         let slider = UISlider()
         slider.minimumValue = Float(range.lowerBound)
