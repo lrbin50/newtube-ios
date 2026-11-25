@@ -825,16 +825,26 @@ struct FullScreenPlayerView: View {
             // Up next
             if !related.isEmpty {
                 Text(L10n.tr("player.upNext")).font(.headline)
-                ForEach(related) { item in
-                    Button { playback.open(item) } label: {
-                        HStack(alignment: .top, spacing: 10) {
-                            RemoteThumbnail(url: item.thumbnailURL)
-                                .frame(width: 120, height: 68).clipped().cornerRadius(6)
-                            VStack(alignment: .leading, spacing: 3) {
-                                Text(item.title).font(.subheadline).lineLimit(3).foregroundColor(.primary)
-                                Text(item.id).font(.caption2).foregroundColor(.secondary)
+                LazyVGrid(
+                    columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 2),
+                    spacing: 14
+                ) {
+                    ForEach(related) { item in
+                        Button { playback.open(item) } label: {
+                            VStack(alignment: .leading, spacing: 6) {
+                                RemoteThumbnail(url: item.thumbnailURL)
+                                    .frame(maxWidth: .infinity)
+                                    .aspectRatio(16 / 9, contentMode: .fit)
+                                    .clipped().cornerRadius(8)
+                                Text(item.title)
+                                    .font(.system(size: 13, weight: .medium))
+                                    .foregroundColor(.primary)
+                                    .lineLimit(2)
+                                    .multilineTextAlignment(.leading)
                             }
+                            .frame(maxWidth: .infinity, alignment: .leading)
                         }
+                        .buttonStyle(.plain)
                     }
                 }
             }
@@ -1474,33 +1484,40 @@ struct PlaylistDetailView: View {
                 EmptyStateView(title: playlist.title, systemImage: "list.bullet.rectangle",
                                description: Text(L10n.tr("playlist.empty")))
             } else {
-                List(videos) { video in
-                    Button { playback.open(video) } label: {
-                        VStack(alignment: .leading, spacing: 8) {
-                            RemoteThumbnail(url: video.thumbnailURL)
-                                .frame(maxWidth: .infinity)
-                                .aspectRatio(16 / 9, contentMode: .fit)
-                                .clipped().cornerRadius(8)
-                            Text(video.title)
-                                .font(.system(size: 13, weight: .medium))
-                                .foregroundColor(.primary)
-                                .lineLimit(2)
-                                .multilineTextAlignment(.leading)
+                ScrollView {
+                    LazyVGrid(
+                        columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 2),
+                        spacing: 18
+                    ) {
+                        ForEach(videos) { video in
+                            Button { playback.open(video) } label: {
+                                VStack(alignment: .leading, spacing: 8) {
+                                    RemoteThumbnail(url: video.thumbnailURL)
+                                        .frame(maxWidth: .infinity)
+                                        .aspectRatio(16 / 9, contentMode: .fit)
+                                        .clipped().cornerRadius(8)
+                                    Text(video.title)
+                                        .font(.system(size: 13, weight: .medium))
+                                        .foregroundColor(.primary)
+                                        .lineLimit(2)
+                                        .multilineTextAlignment(.leading)
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                            .buttonStyle(.plain)
+                            .contextMenu {
+                                Button(L10n.tr("you.addToQueue")) { playback.enqueue(video) }
+                                Button(library.saved.contains(where: { $0.id == video.id })
+                                       ? L10n.tr("you.removeSaved") : L10n.tr("card.watchLater")) {
+                                    library.bookmark(video)
+                                }
+                                ShareButton(url: video.watchURL)
+                            }
                         }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.vertical, 6)
                     }
-                    .buttonStyle(.plain)
-                    .contextMenu {
-                        Button(L10n.tr("you.addToQueue")) { playback.enqueue(video) }
-                        Button(library.saved.contains(where: { $0.id == video.id })
-                               ? L10n.tr("you.removeSaved") : L10n.tr("card.watchLater")) {
-                            library.bookmark(video)
-                        }
-                        ShareButton(url: video.watchURL)
-                    }
-                    .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
-                }.listStyle(.plain)
+                    .padding(.horizontal, 16)
+                    .padding(.top, 8)
+                }
             }
         }
         .navigationTitle(playlist.title)
