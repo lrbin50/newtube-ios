@@ -56,6 +56,20 @@ struct RootView: View {
         // Rebuild the tree when the language changes so every L10n.tr() call
         // re-resolves; environment objects survive the rebuild.
         .id(l10n.language)
+        // Floating bottom-right mini window while the player is minimized;
+        // playback keeps running on top of every tab. (overlay(alignment:) is
+        // iOS 15+, so the alignment is built with spacer stacks for iOS 14.)
+        .overlay(
+            HStack {
+                Spacer()
+                VStack {
+                    Spacer()
+                    if playback.minimized, let video = playback.current {
+                        MiniPlayerView(video: video)
+                    }
+                }
+            }
+        )
         .onAppear {
             browser.play = { playback.open($0) }
         }
@@ -67,8 +81,11 @@ struct RootView: View {
         .onReceive(NotificationCenter.default.publisher(for: .switchToHomeTab)) { _ in
             selection = 0
         }
-        // Any video being opened takes over the whole screen.
-        .fullScreenCover(item: Binding(get: { playback.current }, set: { _ in })) { video in
+        // Any video being opened takes over the whole screen. When the player
+        // minimizes into the mini window the cover releases the full-screen
+        // page by yielding a nil item.
+        .fullScreenCover(item: Binding(get: { playback.minimized ? nil : playback.current },
+                                       set: { _ in })) { video in
             FullScreenPlayerView(video: video)
                 .environmentObject(library)
                 .environmentObject(playback)
@@ -435,7 +452,9 @@ struct FullScreenPlayerView: View {
     @State private var disliked = false
     @State private var subscribed = false
     @State private var didLoadMeta = false
-    @State private var showPlayerSettings = false
+    // iOS 14 only reliably presents one sheet per view, so settings and the
+    // playlist picker share a single attachment keyed by an enum.
+    @State private var activeSheet: ActiveSheet?
     @State private var playhead: Double = 0
     @State private var duration: Double = 0
     @State private var seeking = false
@@ -456,7 +475,7 @@ struct FullScreenPlayerView: View {
                     ZStack {
                         PlayerSurface(player: playback.player)
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        if playback.resolving { ProgressView().accentColor(.white) }
+                        if playback.resolving { ResolvingOverlay() }
                         playerControls
                     }
                 } else {
@@ -466,7 +485,7 @@ struct FullScreenPlayerView: View {
                             ZStack {
                                 PlayerSurface(player: playback.player)
                                     .frame(height: geo.size.width * 9 / 16)
-                                if playback.resolving { ProgressView().accentColor(.white) }
+                                if playback.resolving { ResolvingOverlay() }
                                 playerControls
                             }
                             detail
@@ -498,7 +517,17 @@ struct FullScreenPlayerView: View {
             if !resolving { load() }
         }
         .sheet(item: $webPlayer) { video in WebPlayer(url: video.watchURL).ignoresSafeArea() }
-        .sheet(isPresented: $showPlayerSettings) { PlayerSettingsSheet() }
+        .sheet(item: $activeSheet) { sheet in
+            switch sheet {
+            case .settings: PlayerSettingsSheet()
+            case .save: SaveToPlaylistSheet(video: video)
+            }
+        }
+    }
+
+    enum ActiveSheet: Identifiable {
+        case settings, save
+        var id: Self { self }
     }
 
     /// A single, high-contrast control layer. AVPlayerViewController's grey
@@ -507,7 +536,9 @@ struct FullScreenPlayerView: View {
     private var playerControls: some View {
         VStack(spacing: 0) {
             HStack(spacing: 8) {
-                controlButton(system: "chevron.down", size: 18) { playback.close() }
+                // Collapse into the bottom-right mini window (playback keeps
+                // running); the player page dismisses.
+                controlButton(system: "chevron.down", size: 18) { playback.minimize() }
                 Spacer()
                 if tv.name != nil {
                     controlButton(system: "airplayvideo", size: 16, action: cast)
@@ -515,7 +546,7 @@ struct FullScreenPlayerView: View {
                 controlButton(system: subtitles ? "captions.bubble.fill" : "captions.bubble", size: 16) {
                     subtitles.toggle()
                 }
-                controlButton(system: "gearshape", size: 16) { showPlayerSettings = true }
+                controlButton(system: "gearshape", size: 16) { activeSheet = .settings }
             }
             .padding(.horizontal, 10)
             .padding(.top, 8)
@@ -626,9 +657,10 @@ struct FullScreenPlayerView: View {
                     playback.save(video, audioOnly: false)
                 }
                 action(system: library.saved.contains(where: { $0.id == video.id }) ? "bookmark.fill" : "bookmark",
-                       label: library.saved.contains(where: { $0.id == video.id }) ? L10n.tr("common.saved") : L10n.tr("common.save"),
+                       label: L10n.tr("common.save"),
                        active: library.saved.contains(where: { $0.id == video.id })) {
-                    library.bookmark(video)
+                    // Choose which playlist to save into.
+                    activeSheet = .save
                 }
             }
 

@@ -55,21 +55,25 @@ struct YTPlaylist: Identifiable, Equatable {
     }
 
     private func browse(browseId: String, token: String) async throws -> [String: Any]? {
-        let body: [String: Any] = [
-            "context": [
-                "client": [
-                    "clientName": "TVHTML5",
-                    "clientVersion": tvClientVersion,
-                    "hl": "en", "gl": "US",
-                    "platform": "TV",
-                    "clientFormFactor": "UNKNOWN_FORM_FACTOR"
-                ],
-                "user": ["enableSafetyMode": false, "lockedSafetyMode": false],
-                "request": ["useSsl": true, "internalExperimentFlags": []]
-            ],
-            "browseId": browseId
-        ]
-        guard let url = URL(string: "https://www.youtube.com/youtubei/v1/browse?key=\(apiKey)&prettyPrint=false") else {
+        var body = tvContext()
+        body["browseId"] = browseId
+        return try await post("browse", body: body, token: token)
+    }
+
+    /// Adds a video to a playlist through the InnerTube playlist editor.
+    /// Watch later uses the special playlist id `WL`; regular playlists use
+    /// their `VL…` id.
+    func addToPlaylist(playlistId: String, videoId: String) async -> Bool {
+        guard let token = try? await Account.shared.validToken() else { return false }
+        var body = tvContext()
+        body["playlistId"] = playlistId
+        body["actions"] = [["action": "ACTION_ADD_VIDEO", "addedVideoId": videoId]]
+        let json = try? await post("browse/edit_playlist", body: body, token: token)
+        return json != nil
+    }
+
+    private func post(_ endpoint: String, body: [String: Any], token: String) async throws -> [String: Any]? {
+        guard let url = URL(string: "https://www.youtube.com/youtubei/v1/\(endpoint)?key=\(apiKey)&prettyPrint=false") else {
             return nil
         }
         var request = URLRequest(url: url)
@@ -86,6 +90,22 @@ struct YTPlaylist: Identifiable, Equatable {
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         else { return nil }
         return json
+    }
+
+    private func tvContext() -> [String: Any] {
+        [
+            "context": [
+                "client": [
+                    "clientName": "TVHTML5",
+                    "clientVersion": tvClientVersion,
+                    "hl": "en", "gl": "US",
+                    "platform": "TV",
+                    "clientFormFactor": "UNKNOWN_FORM_FACTOR"
+                ],
+                "user": ["enableSafetyMode": false, "lockedSafetyMode": false],
+                "request": ["useSsl": true, "internalExperimentFlags": []]
+            ]
+        ]
     }
 
     // MARK: - Parsing

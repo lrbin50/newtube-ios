@@ -14,6 +14,9 @@ import SwiftUI
     @Published private(set) var downloading: String?
     @Published var message: String?
     @Published var expanded = true
+    /// True when the player collapsed into the bottom-right mini window;
+    /// playback keeps running while the user browses other tabs.
+    @Published private(set) var minimized = false
     @Published private(set) var queue: [Video] = []
     private var ranges: [[Double]] = []
     private var lookup: Task<Void, Never>?
@@ -188,6 +191,13 @@ import SwiftUI
 
     func toggle() { if player.rate == 0 { resume() } else { player.pause() } }
 
+    /// Collapse the player into the bottom-right mini window without
+    /// stopping playback.
+    func minimize() { minimized = true }
+
+    /// Bring the player page back up from the mini window.
+    func restore() { minimized = false }
+
     func close() {
         lookup?.cancel()
         extras?.cancel()
@@ -202,6 +212,7 @@ import SwiftUI
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
         current = nil
+        minimized = false
         resolving = false
         failure = nil
         lastCheckpoint = -1
