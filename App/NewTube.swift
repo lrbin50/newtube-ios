@@ -665,11 +665,10 @@ struct FullScreenPlayerView: View {
                         .font(.system(size: 11, weight: .semibold, design: .monospaced))
                         .foregroundColor(.white)
                         .shadow(radius: 1)
-                    Slider(value: $playhead, in: 0...max(duration, 1), onEditingChanged: { editing in
+                    ThinProgressSlider(value: $playhead, in: 0...max(duration, 1)) { editing in
                         self.seeking = editing
                         if !editing { self.playback.seek(self.playhead) }
-                    })
-                    .accentColor(.red)
+                    }
                     Text(timeString(duration))
                         .font(.system(size: 11, weight: .semibold, design: .monospaced))
                         .foregroundColor(.white)
@@ -903,6 +902,75 @@ struct FullScreenPlayerView: View {
             } catch {
                 playback.message = "Could not send to TV. " + error.localizedDescription
             }
+        }
+    }
+}
+
+/// Thin progress slider with a small, explicitly-sized thumb. SwiftUI's native
+/// `Slider` uses a large system thumb on iOS 14; wrapping `UISlider` lets us
+/// draw a compact dot while keeping the same binding / seek behaviour.
+struct ThinProgressSlider: UIViewRepresentable {
+    @Binding var value: Double
+    var range: ClosedRange<Double>
+    var onEditingChanged: (Bool) -> Void
+
+    func makeUIView(context: Context) -> UISlider {
+        let slider = UISlider()
+        slider.minimumValue = Float(range.lowerBound)
+        slider.maximumValue = Float(range.upperBound)
+        slider.minimumTrackTintColor = .red
+        slider.maximumTrackTintColor = UIColor.white.withAlphaComponent(0.32)
+        let thumb = Self.thumbImage(diameter: 10)
+        slider.setThumbImage(thumb, for: .normal)
+        slider.setThumbImage(thumb, for: .highlighted)
+        slider.setThumbImage(thumb, for: .selected)
+        slider.addTarget(context.coordinator, action: #selector(Coordinator.editingChanged(_:)),
+                         for: .valueChanged)
+        slider.addTarget(context.coordinator, action: #selector(Coordinator.touchDown(_:)),
+                         for: .touchDown)
+        slider.addTarget(context.coordinator, action: #selector(Coordinator.touchUp(_:)),
+                         for: [.touchUpInside, .touchUpOutside, .touchCancel])
+        return slider
+    }
+
+    func updateUIView(_ slider: UISlider, context: Context) {
+        context.coordinator.parent = self
+        slider.minimumValue = Float(range.lowerBound)
+        slider.maximumValue = Float(range.upperBound)
+        if !context.coordinator.dragging {
+            slider.value = Float(min(max(value, range.lowerBound), range.upperBound))
+        }
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+
+    private static func thumbImage(diameter: CGFloat) -> UIImage {
+        let size = CGSize(width: diameter, height: diameter)
+        return UIGraphicsImageRenderer(size: size).image { ctx in
+            UIColor.white.setFill()
+            UIBezierPath(ovalIn: CGRect(origin: .zero, size: size)).fill()
+        }
+    }
+
+    final class Coordinator: NSObject {
+        var parent: ThinProgressSlider
+        var dragging = false
+
+        init(_ parent: ThinProgressSlider) { self.parent = parent }
+
+        @objc func touchDown(_ slider: UISlider) {
+            dragging = true
+            parent.onEditingChanged(true)
+        }
+
+        @objc func editingChanged(_ slider: UISlider) {
+            parent.value = Double(slider.value)
+        }
+
+        @objc func touchUp(_ slider: UISlider) {
+            parent.value = Double(slider.value)
+            dragging = false
+            parent.onEditingChanged(false)
         }
     }
 }
