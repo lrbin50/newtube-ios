@@ -4,7 +4,7 @@ import AVKit
 /// Backing view for the mini window: an AVPlayerLayer that always fills its
 /// bounds. Keeping the layer's frame in `layoutSubviews` avoids the zero-size
 /// layer you get if you only set it in SwiftUI's `makeUIView`.
-fileprivate final class MiniPlayerVideoView: UIView {
+final class MiniPlayerVideoView: UIView {
     let playerLayer = AVPlayerLayer()
 
     override init(frame: CGRect) {
