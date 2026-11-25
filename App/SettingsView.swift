@@ -10,6 +10,7 @@ struct SettingsView: View {
     @AppStorage("sponsorBlock") private var skip = true
     @AppStorage("deArrow") private var titles = false
     @AppStorage("showDislikes") private var votes = false
+    @AppStorage("showShorts") private var showShorts = false
     @AppStorage("speed") private var speed = 1.0
     @State private var code = ""
     @State private var pairing = false
@@ -43,6 +44,12 @@ struct SettingsView: View {
                         }
                     }
                     .pickerStyle(DefaultPickerStyle())
+                }
+                Section(
+                    header: Text(L10n.tr("settings.interface")),
+                    footer: Text(L10n.tr("settings.shorts.footer"))
+                ) {
+                    Toggle(L10n.tr("settings.showShorts"), isOn: $showShorts)
                 }
                 Section(header: Text(L10n.tr("settings.playback"))) {
                     Picker(L10n.tr("settings.defaultSpeed"), selection: $speed) {

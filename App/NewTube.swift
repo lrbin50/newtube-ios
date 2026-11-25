@@ -10,7 +10,7 @@ import UIKit
     @StateObject private var tv = Television()
 
     init() {
-        UserDefaults.standard.register(defaults: ["sponsorBlock": true, "deArrow": false, "showDislikes": false, "speed": 1.0])
+        UserDefaults.standard.register(defaults: ["sponsorBlock": true, "deArrow": false, "showDislikes": false, "speed": 1.0, "showShorts": false])
         // Pre-connect DNS/TLS/HTTP2 to youtube.com so the first player request
         // does not pay for a handshake.
         LegacyNetwork.warmup()
@@ -35,12 +35,16 @@ struct RootView: View {
     @EnvironmentObject var tv: Television
     @ObservedObject private var l10n = L10n.shared
     @ObservedObject private var account = Account.shared
+    @AppStorage("showShorts") private var showShorts = false
     @State private var selection = 0
 
     var body: some View {
         TabView(selection: $selection) {
             homeTab
-            shortsTab
+            // Shorts is opt-in and hidden by default. Beyond hiding the icon,
+            // omitting the tab prevents ShortsWebStore (and its web view) from
+            // ever being created, so it truly does not load when disabled.
+            if showShorts { shortsTab }
             subsTab
             youTab
         }
@@ -52,6 +56,11 @@ struct RootView: View {
             browser.play = { playback.open($0) }
         }
         // Reload the shared feed when switching between Home and Subscriptions.
+        // If Shorts is turned off while it is the active tab, fall back to
+        // Home so no empty tab stays selected (Shorts carries tag 1).
+        .onChange(of: showShorts) { showing in
+            if !showing && selection == 1 { selection = 0 }
+        }
         .onChange(of: selection) { index in
             if index == 0 { Task { await Feed.shared.load(.home) } }
             if index == 2 { Task { await SubscriptionsStore.shared.load() } }
