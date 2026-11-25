@@ -306,7 +306,7 @@ struct ChannelProfileView: View {
             }
         }
         walk(json)
-        if let cid = foundID { await load() }
+        if foundID != nil { await load() }
     }
 
     private func parseHeader(_ json: [String: Any]) {
@@ -323,7 +323,9 @@ struct ChannelProfileView: View {
         func largest(_ value: Any?) -> URL? {
             guard let dict = value as? [String: Any],
                   let thumbs = dict["thumbnails"] as? [[String: Any]] else { return nil }
-            let best = thumbs.max { (a["width"] as? Int ?? 0) < (b["width"] as? Int ?? 0) }
+            let best = thumbs.max { a, b in
+                (a["width"] as? Int ?? 0) < (b["width"] as? Int ?? 0)
+            }
             guard let raw = best?["url"] as? String else { return nil }
             return URL(string: raw)
         }
