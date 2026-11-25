@@ -31,6 +31,7 @@ struct RootView: View {
     @EnvironmentObject var browser: Browser
     @EnvironmentObject var tv: Television
     @ObservedObject private var l10n = L10n.shared
+    @ObservedObject private var account = Account.shared
     @State private var selection = 0
 
     var body: some View {
@@ -42,7 +43,15 @@ struct RootView: View {
             BrowseView()
                 .tabItem { Label(L10n.tr("tab.subscriptions"), systemImage: "rectangle.stack") }.tag(2)
             LibraryView()
-                .tabItem { Label(L10n.tr("tab.you"), systemImage: "person.crop.circle") }.tag(3)
+                .tabItem {
+                    // Signed-in: show the real Google account photo.
+                    if let image = account.avatarImage {
+                        Image(uiImage: image)
+                    } else {
+                        Image(systemName: "person.crop.circle")
+                    }
+                    Text(L10n.tr("tab.you"))
+                }.tag(3)
         }
         // Rebuild the tree when the language changes so every L10n.tr() call
         // re-resolves; environment objects survive the rebuild.
@@ -852,6 +861,7 @@ struct LibraryView: View {
     @EnvironmentObject var playback: Playback
     @EnvironmentObject var tv: Television
     @ObservedObject private var account = Account.shared
+    @ObservedObject private var playlists = PlaylistsStore.shared
     @State private var showSettings = false
     @State private var showSearch = false
     @State private var searchText = ""
@@ -868,9 +878,7 @@ struct LibraryView: View {
                     if !library.history.isEmpty {
                         shelf(title: L10n.tr("you.history"), videos: library.history)
                     }
-                    if !library.saved.isEmpty {
-                        shelf(title: L10n.tr("you.playlists"), videos: library.saved)
-                    }
+                    playlistsArea
                     VStack(spacing: 0) {
                         row(icon: "video", title: L10n.tr("you.myVideos"), kind: .myVideos)
                         row(icon: "arrow.down.circle", title: L10n.tr("common.download"), kind: .downloads)
@@ -893,6 +901,7 @@ struct LibraryView: View {
             }
         }
         .navigationViewStyle(StackNavigationViewStyle())
+        .onAppear { Task { await playlists.load() } }
         .sheet(isPresented: $showSettings) { SettingsView().environmentObject(tv) }
         .sheet(isPresented: $showSearch) {
             NavigationView {
@@ -929,14 +938,24 @@ struct LibraryView: View {
     private var accountHeader: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 12) {
-                Circle()
-                    .fill(LinearGradient(gradient: Gradient(colors: [Color.blue, Color(UIColor.systemTeal)]),
-                                         startPoint: .topLeading, endPoint: .bottomTrailing))
-                    .frame(width: 54, height: 54)
-                    .overlay(
-                        Text((account.accountName ?? "Y").prefix(1).uppercased())
-                            .font(.system(size: 22, weight: .bold)).foregroundColor(.white)
-                    )
+                // Real Google account photo when available, otherwise the
+                // initial-letter gradient placeholder.
+                if let image = account.avatarImage {
+                    Image(uiImage: image).resizable().scaledToFill()
+                        .frame(width: 54, height: 54).clipShape(Circle())
+                } else if let url = account.avatarURL {
+                    RemoteThumbnail(url: url)
+                        .frame(width: 54, height: 54).clipped().clipShape(Circle())
+                } else {
+                    Circle()
+                        .fill(LinearGradient(gradient: Gradient(colors: [Color.blue, Color(UIColor.systemTeal)]),
+                                             startPoint: .topLeading, endPoint: .bottomTrailing))
+                        .frame(width: 54, height: 54)
+                        .overlay(
+                            Text((account.accountName ?? "Y").prefix(1).uppercased())
+                                .font(.system(size: 22, weight: .bold)).foregroundColor(.white)
+                        )
+                }
                 VStack(alignment: .leading, spacing: 2) {
                     Text(account.accountName ?? L10n.tr("signin.title"))
                         .font(.system(size: 20, weight: .bold))
@@ -959,6 +978,69 @@ struct LibraryView: View {
             }
         }
         .padding(.horizontal, 16).padding(.vertical, 14)
+    }
+
+    /// Real account playlists from InnerTube; falls back to the local
+    /// watch-later list while loading or when signed out.
+    @ViewBuilder
+    private var playlistsArea: some View {
+        if !playlists.playlists.isEmpty {
+            playlistsShelf
+        } else if playlists.loading {
+            HStack {
+                Spacer()
+                ProgressView(L10n.tr("common.loading"))
+                Spacer()
+            }.padding(.vertical, 24)
+        } else if !library.saved.isEmpty {
+            shelf(title: L10n.tr("you.watchLater"), videos: library.saved)
+        }
+    }
+
+    private var playlistsShelf: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(L10n.tr("you.playlists")).font(.headline).padding(.horizontal, 16)
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 12) {
+                    ForEach(playlists.playlists.prefix(20)) { playlist in
+                        NavigationLink(destination: PlaylistDetailView(playlist: playlist)) {
+                            VStack(alignment: .leading, spacing: 6) {
+                                ZStack(alignment: .bottomTrailing) {
+                                    Group {
+                                        if let url = playlist.thumbnail {
+                                            RemoteThumbnail(url: url)
+                                        } else {
+                                            Rectangle().fill(Color.secondary.opacity(0.15))
+                                                .overlay(Image(systemName: "list.bullet.rectangle")
+                                                    .font(.system(size: 28)).foregroundColor(.secondary))
+                                        }
+                                    }
+                                    .frame(width: 190, height: 107).clipped().cornerRadius(8)
+                                    if let count = playlist.count {
+                                        HStack(spacing: 3) {
+                                            Image(systemName: "line.3.horizontal")
+                                                .font(.system(size: 10, weight: .bold))
+                                            Text("\(count)").font(.system(size: 11, weight: .semibold))
+                                        }
+                                        .foregroundColor(.white)
+                                        .padding(.horizontal, 6).padding(.vertical, 2)
+                                        .background(Color.black.opacity(0.8)).cornerRadius(4)
+                                        .padding(6)
+                                    }
+                                }
+                                Text(playlist.title)
+                                    .font(.caption).foregroundColor(.primary)
+                                    .lineLimit(2).multilineTextAlignment(.leading)
+                                Text(L10n.tr("you.private.playlist"))
+                                    .font(.caption2).foregroundColor(.secondary)
+                            }
+                            .frame(width: 190, alignment: .leading)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }.padding(.horizontal, 16)
+            }
+        }.padding(.bottom, 14)
     }
 
     private func shelf(title: String, videos: [Video]) -> some View {
@@ -1004,8 +1086,213 @@ struct LibraryView: View {
             EmptyStateView(title: L10n.tr("you.watchTime"), systemImage: "clock",
                            description: Text(L10n.tr("you.watchTime.desc")))
                 .navigationTitle(L10n.tr("you.watchTime"))
+        } else if kind == .films {
+            // Films opens the real YouTube movies storefront.
+            MoviesView()
         } else {
             CollectionListView(kind: kind)
+        }
+    }
+}
+
+/// Films page, mirroring the YouTube movies storefront: a header, sub-tabs
+/// (Browse / Free with ads / Live / Purchases / Store) and titled shelves of
+/// portrait-poster movie cards.
+struct MoviesView: View {
+    @EnvironmentObject var playback: Playback
+    @ObservedObject private var store = MoviesStore.shared
+    @State private var tab: MoviesTab = .browse
+
+    private func tabLabel(_ tab: MoviesTab) -> String {
+        switch tab {
+        case .browse: return L10n.tr("movies.tab.browse")
+        case .free: return L10n.tr("movies.tab.free")
+        case .live: return L10n.tr("movies.tab.live")
+        case .purchases: return L10n.tr("movies.tab.purchases")
+        case .store: return L10n.tr("movies.tab.store")
+        }
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 12) {
+                RoundedRectangle(cornerRadius: 12).fill(Color.red)
+                    .frame(width: 46, height: 46)
+                    .overlay(Image(systemName: "film.fill").foregroundColor(.white)
+                        .font(.system(size: 20)))
+                Text(L10n.tr("you.films")).font(.system(size: 28, weight: .bold))
+                Spacer()
+            }
+            .padding(.horizontal, 16).padding(.top, 10).padding(.bottom, 6)
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 20) {
+                    ForEach(MoviesTab.allCases) { candidate in
+                        Button {
+                            guard tab != candidate else { return }
+                            tab = candidate
+                        } label: {
+                            VStack(spacing: 6) {
+                                Text(tabLabel(candidate))
+                                    .font(.system(size: 14,
+                                                  weight: tab == candidate ? .semibold : .regular))
+                                    .foregroundColor(tab == candidate ? .primary : .secondary)
+                                Rectangle()
+                                    .fill(tab == candidate ? Color.primary : Color.clear)
+                                    .frame(height: 2)
+                            }
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal, 16)
+            }
+
+            if store.loading && store.sections.isEmpty {
+                VStack { ProgressView(L10n.tr("common.loading")).padding(.top, 60) }
+            } else if let message = store.message, store.sections.isEmpty {
+                EmptyStateView(title: message, systemImage: "film",
+                               description: Text(L10n.tr("common.retry")),
+                               buttonTitle: L10n.tr("common.retry")) {
+                    Task { await store.load(tab: tab, force: true) }
+                }
+            } else {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 20) {
+                        ForEach(store.sections) { section in
+                            VStack(alignment: .leading, spacing: 10) {
+                                Text(section.title).font(.headline)
+                                    .padding(.horizontal, 16)
+                                LazyVGrid(columns: [GridItem(.adaptive(minimum: 120), spacing: 10)],
+                                          spacing: 16) {
+                                    ForEach(section.movies) { movie in
+                                        MovieCard(movie: movie)
+                                            .onAppear { FastMedia.prewarm(movie.id) }
+                                    }
+                                }
+                                .padding(.horizontal, 12)
+                            }
+                        }
+                    }
+                    .padding(.top, 10)
+                    .padding(.bottom, 24)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .onAppear { Task { await store.load(tab: tab) } }
+        .onChange(of: tab) { _ in
+            Task { await store.load(tab: tab) }
+        }
+    }
+}
+
+/// A movie poster card: portrait poster, title, genre • year, price badge
+/// and age rating, matching the mobile movies page.
+struct MovieCard: View {
+    @EnvironmentObject var playback: Playback
+    let movie: MovieItem
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            ZStack(alignment: .bottomTrailing) {
+                Group {
+                    if let url = movie.poster {
+                        RemoteThumbnail(url: url)
+                    } else {
+                        Rectangle().fill(Color.secondary.opacity(0.15))
+                            .overlay(Image(systemName: "film").foregroundColor(.secondary))
+                    }
+                }
+                .aspectRatio(2 / 3, contentMode: .fit)
+                .clipped().cornerRadius(8)
+                if let duration = movie.duration {
+                    Text(duration).font(.system(size: 10, weight: .semibold)).foregroundColor(.white)
+                        .padding(.horizontal, 5).padding(.vertical, 2)
+                        .background(Color.black.opacity(0.8)).cornerRadius(4)
+                        .padding(5)
+                }
+            }
+            Text(movie.title)
+                .font(.system(size: 13, weight: .medium)).foregroundColor(.primary)
+                .lineLimit(2).multilineTextAlignment(.leading)
+            if let info = movie.info {
+                Text(info).font(.caption2).foregroundColor(.secondary).lineLimit(1)
+            }
+            if let badge = movie.badge {
+                Text(badge).font(.caption2.weight(.medium)).foregroundColor(.green).lineLimit(1)
+            }
+            if let rating = movie.rating {
+                Text(rating)
+                    .font(.system(size: 9, weight: .semibold)).foregroundColor(.secondary)
+                    .padding(.horizontal, 5).padding(.vertical, 1)
+                    .overlay(RoundedRectangle(cornerRadius: 3).stroke(Color.secondary.opacity(0.5), lineWidth: 1))
+                    .padding(.top, 1)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
+        .onTapGesture { playback.open(Video(id: movie.id, title: movie.title)) }
+    }
+}
+
+/// Videos inside an account playlist, loaded from InnerTube on open.
+struct PlaylistDetailView: View {
+    @EnvironmentObject var library: Library
+    @EnvironmentObject var playback: Playback
+    let playlist: YTPlaylist
+    @State private var videos: [Video] = []
+    @State private var loading = true
+
+    var body: some View {
+        Group {
+            if loading {
+                VStack { ProgressView(L10n.tr("common.loading")).padding(.top, 60) }
+            } else if videos.isEmpty {
+                EmptyStateView(title: playlist.title, systemImage: "list.bullet.rectangle",
+                               description: Text(L10n.tr("playlist.empty")))
+            } else {
+                List(videos) { video in
+                    Button { playback.open(video) } label: {
+                        HStack {
+                            RemoteThumbnail(url: video.thumbnailURL)
+                                .frame(width: 120, height: 68).clipped()
+                                .clipShape(RoundedRectangle(cornerRadius: 6))
+                            Text(video.title).lineLimit(3).foregroundColor(.primary)
+                            Spacer()
+                        }
+                    }
+                    .contextMenu {
+                        Button(L10n.tr("you.addToQueue")) { playback.enqueue(video) }
+                        Button(library.saved.contains(where: { $0.id == video.id })
+                               ? L10n.tr("you.removeSaved") : L10n.tr("card.watchLater")) {
+                            library.bookmark(video)
+                        }
+                        ShareButton(url: video.watchURL)
+                    }
+                }.listStyle(.plain)
+            }
+        }
+        .navigationTitle(playlist.title)
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .navigationBarLeading) {
+                if videos.count > 1 {
+                    Button {
+                        playback.playCollection(videos)
+                    } label: {
+                        Label(L10n.tr("you.playAll"),
+                              systemImage: "text.line.first.and.arrowtriangle.forward")
+                    }
+                }
+            }
+        }
+        .onAppear {
+            guard loading else { return }
+            Task {
+                videos = await PlaylistsStore.shared.videos(of: playlist)
+                loading = false
+            }
         }
     }
 }

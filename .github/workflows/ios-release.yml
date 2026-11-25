@@ -1,7 +1,7 @@
 name: Build and release unsigned iOS app
+# Builds are manual-only: pushing commits never triggers a build, so the
+# repository can be committed freely and an IPA produced only when wanted.
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
 
 permissions:

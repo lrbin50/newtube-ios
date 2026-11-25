@@ -1,6 +1,7 @@
 import Foundation
 import Security
 import SwiftUI
+import UIKit
 
 // MARK: - OAuth device-code sign-in (YouTube TV client, no app registration)
 //
@@ -49,10 +50,131 @@ enum AccountError: LocalizedError {
 
     @Published private(set) var isSignedIn = false
     @Published private(set) var accountName: String?
+    /// Real Google account photo, resolved from the InnerTube account menu.
+    @Published private(set) var avatarURL: URL?
+    /// Pre-rendered circular avatar for the tab bar icon.
+    @Published private(set) var avatarImage: UIImage?
 
     private var tokens: OAuthTokens?
     private let service = "com.newtube.oauth"
     private let account = "youtube"
+    private let apiKey = "AIzaSyA8eiZmM1FaDVjRy-df2KTyQ_vz_yYM39w"
+    private let tvClientVersion = "7.20260311.12.00"
+
+    init() {
+        tokens = load()
+        isSignedIn = tokens != nil
+        if tokens != nil { Task { await refreshProfile() } }
+    }
+
+    // MARK: - Profile (name + avatar)
+
+    /// Pulls the signed-in account's name and photo from the InnerTube
+    /// account menu — the same call native TV clients make. Failures are
+    /// silent: the header simply keeps the initial-letter placeholder.
+    func refreshProfile() async {
+        guard let token = try? await validToken() else { return }
+        let body: [String: Any] = [
+            "context": [
+                "client": [
+                    "clientName": "TVHTML5",
+                    "clientVersion": tvClientVersion,
+                    "hl": "en", "gl": "US",
+                    "platform": "TV",
+                    "clientFormFactor": "UNKNOWN_FORM_FACTOR"
+                ]
+            ]
+        ]
+        guard let url = URL(string: "https://www.youtube.com/youtubei/v1/account/account_menu?key=\(apiKey)&prettyPrint=false")
+        else { return }
+        do {
+            let request = try makeInnertubeRequest(url: url, body: body, token: token)
+            let (data, response) = try await LegacyNetwork.data(for: request)
+            guard (response as? HTTPURLResponse)?.statusCode == 200,
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            else { return }
+
+            var name: String?
+            var photo: URL?
+            walkAccountInfo(json) { dict in
+                if name == nil {
+                    let candidate = Self.simpleText(dict["accountName"])
+                    if !candidate.isEmpty { name = candidate }
+                }
+                if photo == nil {
+                    photo = Self.largestThumbnail(dict["accountPhoto"])
+                }
+            }
+            accountName = name ?? accountName
+            avatarURL = photo ?? avatarURL
+            if let avatarURL { await loadAvatarImage(from: avatarURL) }
+        } catch {
+            return
+        }
+    }
+
+    /// Downloads the avatar and pre-crops it to a circle for tab-bar use.
+    private func loadAvatarImage(from url: URL) async {
+        guard let (data, _) = try? await LegacyNetwork.data(for: URLRequest(url: url)),
+              let raw = UIImage(data: data)
+        else { return }
+        let size = min(raw.size.width, raw.size.height)
+        let cropped = UIGraphicsImageRenderer(size: CGSize(width: size, height: size)).image { _ in
+            let rect = CGRect(x: (raw.size.width - size) / 2, y: (raw.size.height - size) / 2,
+                              width: size, height: size)
+            UIBezierPath(ovalIn: CGRect(origin: .zero, size: CGSize(width: size, height: size))).addClip()
+            raw.draw(in: rect)
+        }
+        avatarImage = cropped
+    }
+
+    /// Deep-walks the account menu JSON for every account item shape
+    /// (accountItemRenderer and future variants).
+    private func walkAccountInfo(_ value: Any, into handler: @escaping ([String: Any]) -> Void) {
+        if let dict = value as? [String: Any] {
+            if let item = dict["accountItemRenderer"] as? [String: Any] {
+                handler(item)
+            } else if dict["accountName"] != nil || dict["accountPhoto"] != nil {
+                handler(dict)
+            }
+            for child in dict.values { walkAccountInfo(child, into: handler) }
+        } else if let array = value as? [Any] {
+            for child in array { walkAccountInfo(child, into: handler) }
+        }
+    }
+
+    private static func simpleText(_ value: Any?) -> String {
+        guard let dict = value as? [String: Any] else { return "" }
+        if let s = dict["simpleText"] as? String { return s }
+        if let runs = dict["runs"] as? [[String: Any]] {
+            return runs.compactMap { $0["text"] as? String }.joined()
+        }
+        if let content = dict["content"] as? String { return content }
+        return ""
+    }
+
+    private static func largestThumbnail(_ value: Any?) -> URL? {
+        guard let dict = value as? [String: Any],
+              let thumbs = dict["thumbnails"] as? [[String: Any]]
+        else { return nil }
+        let best = thumbs.max { ($0["width"] as? Int ?? 0) < ($1["width"] as? Int ?? 0) }
+        guard let urlString = best?["url"] as? String else { return nil }
+        return urlString.hasPrefix("http") ? URL(string: urlString)
+            : URL(string: "https:\(urlString)")
+    }
+
+    private func makeInnertubeRequest(url: URL, body: [String: Any], token: String) throws -> URLRequest {
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("com.google.android.youtube/20.10.38 (Linux; U; Android 11) gzip",
+                         forHTTPHeaderField: "User-Agent")
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("7", forHTTPHeaderField: "X-YOUTUBE-CLIENT-NAME")
+        request.setValue(tvClientVersion, forHTTPHeaderField: "X-YOUTUBE-CLIENT-VERSION")
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        return request
+    }
 
     private let deviceCodeURL = "https://www.youtube.com/o/oauth2/device/code"
     private let tokenURL = "https://www.youtube.com/o/oauth2/token"
@@ -126,6 +248,7 @@ enum AccountError: LocalizedError {
                 tokens = new
                 save(new)
                 isSignedIn = true
+                await refreshProfile()
                 return
             }
             switch json["error"] as? String {
@@ -174,6 +297,8 @@ enum AccountError: LocalizedError {
         tokens = nil
         isSignedIn = false
         accountName = nil
+        avatarURL = nil
+        avatarImage = nil
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,

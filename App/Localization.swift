@@ -98,6 +98,13 @@ final class L10n: ObservableObject {
             "you.addToQueue": "Add to queue", "you.removeSaved": "Remove from Watch later",
             "you.deleteDownload": "Delete download", "you.playAll": "Play all",
             "you.shuffle": "Shuffle", "you.play": "Play",
+            "you.watchLater": "Watch later", "you.private.playlist": "Private · Playlist",
+            "you.videoCount": "%d videos",
+            "playlist.empty": "No videos in this playlist yet.",
+            "movies.tab.browse": "Browse", "movies.tab.free": "Free (with ads)",
+            "movies.tab.live": "Live", "movies.tab.purchases": "Purchases",
+            "movies.tab.store": "Store",
+            "movies.empty": "No movies here yet.", "movies.more": "More",
         ],
         .simplifiedChinese: [
             "lang.system": "跟随系统",
@@ -142,6 +149,13 @@ final class L10n: ObservableObject {
             "you.addToQueue": "添加到队列", "you.removeSaved": "从稍后观看移除",
             "you.deleteDownload": "删除下载", "you.playAll": "全部播放",
             "you.shuffle": "随机播放", "you.play": "播放",
+            "you.watchLater": "稍后观看", "you.private.playlist": "私享 · 播放列表",
+            "you.videoCount": "%d 个视频",
+            "playlist.empty": "这个播放列表还没有视频。",
+            "movies.tab.browse": "浏览", "movies.tab.free": "免费（含广告）",
+            "movies.tab.live": "直播", "movies.tab.purchases": "购买的内容",
+            "movies.tab.store": "商店",
+            "movies.empty": "这里暂时没有影片。", "movies.more": "更多",
         ],
     ]
 }
