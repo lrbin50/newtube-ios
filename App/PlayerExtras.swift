@@ -1,4 +1,43 @@
 import SwiftUI
+import AVKit
+
+/// Backing view for the mini window: an AVPlayerLayer that always fills its
+/// bounds. Keeping the layer's frame in `layoutSubviews` avoids the zero-size
+/// layer you get if you only set it in SwiftUI's `makeUIView`.
+private final class MiniPlayerVideoView: UIView {
+    let playerLayer = AVPlayerLayer()
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        backgroundColor = .clear
+        playerLayer.videoGravity = .resizeAspectFill
+        layer.addSublayer(playerLayer)
+    }
+    required init?(coder: NSCoder) { super.init(coder: coder) }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        playerLayer.frame = bounds
+    }
+}
+
+/// A lightweight video layer for the mini window. Uses AVPlayerLayer directly
+/// (not AVPlayerViewController) so it stays inside the SwiftUI overlay frame on
+/// iOS 14 — an embedded player controller used to escape its bounds and paint a
+/// blue circle over the tab bar. The parent view clips it to a rounded rect.
+struct MiniPlayerSurface: UIViewRepresentable {
+    let player: AVPlayer
+
+    func makeUIView(context: Context) -> MiniPlayerVideoView {
+        let view = MiniPlayerVideoView()
+        view.playerLayer.player = player
+        return view
+    }
+
+    func updateUIView(_ view: MiniPlayerVideoView, context: Context) {
+        if view.playerLayer.player !== player { view.playerLayer.player = player }
+    }
+}
 
 // MARK: - Player page extras
 //
@@ -57,14 +96,14 @@ struct MiniPlayerView: View {
 
     var body: some View {
         ZStack(alignment: .topTrailing) {
-            // Static cover instead of an embedded AVPlayerViewController.
-            // On iOS 14 the UIKit player view escapes its SwiftUI frame when
-            // hosted inside an overlay and paints a large blue circle over the
-            // tab bar (visible on every tab). The shared AVPlayer keeps
-            // playing the audio; tapping restores the full-screen video.
+            // Live video: render the same shared AVPlayer here so the picture
+            // keeps playing after the full-screen page is dismissed. The cover
+            // sits behind it so there is no black flash while the layer attaches.
             RemoteThumbnail(url: video.thumbnailURL)
                 .frame(width: 220, height: 124)
-            Color.black.opacity(0.22)
+            MiniPlayerSurface(player: playback.player)
+                .frame(width: 220, height: 124)
+            Color.black.opacity(0.18)
             Image(systemName: playback.playing ? "pause.circle.fill" : "play.circle.fill")
                 .font(.system(size: 30))
                 .foregroundColor(.white.opacity(0.92))
