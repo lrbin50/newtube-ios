@@ -4,6 +4,7 @@ struct SettingsView: View {
     @EnvironmentObject var library: Library
     @EnvironmentObject var playback: Playback
     @EnvironmentObject var tv: Television
+    @ObservedObject private var l10n = L10n.shared
     @AppStorage("sponsorBlock") private var skip = true
     @AppStorage("deArrow") private var titles = false
     @AppStorage("showDislikes") private var votes = false
@@ -15,35 +16,43 @@ struct SettingsView: View {
     var body: some View {
         NavigationView {
             Form {
-                Section(header: Text("Playback")) {
-                    Picker("Default speed", selection: $speed) {
+                Section(header: Text(L10n.tr("settings.language"))) {
+                    Picker(L10n.tr("settings.language"), selection: $l10n.language) {
+                        ForEach(AppLanguage.allCases) { lang in
+                            Text(lang.label).tag(lang)
+                        }
+                    }
+                    .pickerStyle(DefaultPickerStyle())
+                }
+                Section(header: Text(L10n.tr("settings.playback"))) {
+                    Picker(L10n.tr("settings.defaultSpeed"), selection: $speed) {
                         ForEach([0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2], id: \.self) { value in
                             Text("\(value, specifier: "%g")×").tag(value)
                         }
                     }
                 }
                 Section(
-                    header: Text("Community services"),
-                    footer: Text("Enabled services receive the current video ID. SponsorBlock supplies segments, DeArrow supplies titles, and Return YouTube Dislike supplies counts.")
+                    header: Text(L10n.tr("settings.community")),
+                    footer: Text(L10n.tr("settings.community.footer"))
                 ) {
-                    Toggle("Skip sponsors and self-promotion", isOn: $skip)
-                    Toggle("Show DeArrow titles", isOn: $titles)
-                    Toggle("Show estimated dislikes", isOn: $votes)
+                    Toggle(L10n.tr("settings.skipSponsors"), isOn: $skip)
+                    Toggle(L10n.tr("settings.dearrow"), isOn: $titles)
+                    Toggle(L10n.tr("settings.dislikes"), isOn: $votes)
                 }
                 Section(
-                    header: Text("Play on TV"),
-                    footer: Text("Find the pairing code in SmartTube or YouTube on your TV. After pairing, select your TV in the player menu.")
+                    header: Text(L10n.tr("settings.playOnTV")),
+                    footer: Text(L10n.tr("settings.tv.footer"))
                 ) {
                     if let name = tv.name {
                         HStack {
-                            Text("Paired TV")
+                            Text(L10n.tr("settings.pairedTV"))
                             Spacer()
                             Text(name).foregroundColor(.secondary)
                         }
-                        Button("Forget TV") { tv.forget() }.foregroundColor(.red)
+                        Button(L10n.tr("settings.forgetTV")) { tv.forget() }.foregroundColor(.red)
                     } else {
-                        TextField("12-digit TV code", text: $code).keyboardType(.numberPad)
-                        Button(pairing ? "Pairing…" : "Pair TV") {
+                        TextField(L10n.tr("settings.tvCode"), text: $code).keyboardType(.numberPad)
+                        Button(pairing ? L10n.tr("settings.pairing") : L10n.tr("settings.pairTV")) {
                             pairing = true
                             Task {
                                 defer { pairing = false }
@@ -53,13 +62,13 @@ struct SettingsView: View {
                         }.disabled(pairing || code.filter(\.isNumber).count != 12)
                     }
                 }
-                Section(header: Text("Library")) {
-                    Button("Clear local watch history") { confirmClear = true }.foregroundColor(.red)
+                Section(header: Text(L10n.tr("settings.library"))) {
+                    Button(L10n.tr("settings.clearHistory")) { confirmClear = true }.foregroundColor(.red)
                 }
-                Section(header: Text("About")) {
+                Section(header: Text(L10n.tr("settings.about"))) {
                     Link("NewTube for iOS", destination: URL(string: "https://github.com/toofpaste/newtube-ios")!)
                     Link("Original Android app", destination: URL(string: "https://github.com/aleixrodriala/newtube")!)
-                    NavigationLink("Credits and licenses") {
+                    NavigationLink(L10n.tr("settings.credits")) {
                         ScrollView {
                             VStack(alignment: .leading, spacing: 20) {
                                 ForEach(["Credits", "NewTube", "YouTubeKit"], id: \.self) { name in
@@ -69,19 +78,24 @@ struct SettingsView: View {
                                     }
                                 }
                             }.padding()
-                        }.navigationTitle("Credits and licenses")
+                        }.navigationTitle(L10n.tr("settings.credits"))
                     }
                 }
-            }.navigationTitle("Settings")
+            }
+            .navigationTitle(L10n.tr("settings.title"))
             .onChange(of: speed) { _ in if playback.playing { playback.resume() } }
             .onChange(of: skip) { _ in playback.refreshCommunity() }
             .onChange(of: titles) { _ in playback.refreshCommunity() }
             .onChange(of: votes) { _ in playback.refreshCommunity() }
             .actionSheet(isPresented: $confirmClear) {
                 ActionSheet(
-                    title: Text("Clear watch history and resume positions on this device?"),
+                    title: Text(L10n.shared.effective == .simplifiedChinese
+                        ? "清除此设备上的观看历史和播放进度？"
+                        : "Clear watch history and resume positions on this device?"),
                     buttons: [
-                        .destructive(Text("Clear history")) { library.clearHistory() },
+                        .destructive(Text(L10n.shared.effective == .simplifiedChinese ? "清除历史" : "Clear history")) {
+                            library.clearHistory()
+                        },
                         .cancel()
                     ]
                 )

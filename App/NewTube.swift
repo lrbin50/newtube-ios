@@ -30,19 +30,23 @@ struct RootView: View {
     @EnvironmentObject var playback: Playback
     @EnvironmentObject var browser: Browser
     @EnvironmentObject var tv: Television
+    @ObservedObject private var l10n = L10n.shared
     @State private var selection = 0
 
     var body: some View {
         TabView(selection: $selection) {
             BrowseView()
-                .tabItem { Label("Home", systemImage: "house.fill") }.tag(0)
+                .tabItem { Label(L10n.tr("tab.home"), systemImage: "house.fill") }.tag(0)
             ShortsView()
-                .tabItem { Label("Shorts", systemImage: "play.rectangle.fill") }.tag(1)
+                .tabItem { Label(L10n.tr("tab.shorts"), systemImage: "play.rectangle.fill") }.tag(1)
             BrowseView()
-                .tabItem { Label("Subscriptions", systemImage: "rectangle.stack") }.tag(2)
+                .tabItem { Label(L10n.tr("tab.subscriptions"), systemImage: "rectangle.stack") }.tag(2)
             LibraryView()
-                .tabItem { Label("You", systemImage: "person.crop.circle") }.tag(3)
+                .tabItem { Label(L10n.tr("tab.you"), systemImage: "person.crop.circle") }.tag(3)
         }
+        // Rebuild the tree when the language changes so every L10n.tr() call
+        // re-resolves; environment objects survive the rebuild.
+        .id(l10n.language)
         .onAppear {
             browser.play = { playback.open($0) }
         }
@@ -59,7 +63,8 @@ struct RootView: View {
                 .environmentObject(tv)
         }
         .alert(isPresented: Binding(get: { playback.message != nil }, set: { if !$0 { playback.message = nil } })) {
-            Alert(title: Text("NewTube"), message: Text(playback.message ?? ""), dismissButton: .default(Text("OK")))
+            Alert(title: Text("NewTube"), message: Text(playback.message ?? ""),
+                  dismissButton: .default(Text(L10n.tr("common.ok"))))
         }
     }
 }
@@ -105,8 +110,10 @@ struct BrowseView: View {
     @State private var showSignIn = false
     @State private var selectedChip = 0
 
-    private let chips = ["All", "Music", "Podcasts", "Mixes", "Live",
-                         "Travel", "Recently uploaded", "Watched", "New to you"]
+    private var chips: [String] {
+        ["chip.all", "chip.music", "chip.podcasts", "chip.mixes", "chip.live",
+         "chip.travel", "chip.recent", "chip.watched", "chip.newToYou"].map { L10n.tr($0) }
+    }
 
     var body: some View {
         GeometryReader { geo in
@@ -120,11 +127,11 @@ struct BrowseView: View {
                         VStack(spacing: 0) {
                             Color.clear.frame(height: 100) // space for pinned header + chips
                             if feed.loading && feed.videos.isEmpty {
-                                VStack { ProgressView("Loading…").padding(.top, 80) }
+                                VStack { ProgressView(L10n.tr("common.loading")).padding(.top, 80) }
                             } else if let message = feed.message, feed.videos.isEmpty {
                                 EmptyStateView(title: message, systemImage: "exclamationmark.triangle",
-                                               description: Text("Try signing in again from the Account menu."),
-                                               buttonTitle: "Retry") {
+                                               description: Text("Sign in again from the Account menu."),
+                                               buttonTitle: L10n.tr("common.retry")) {
                                     Task { await feed.load(.home) }
                                 }
                             } else {
@@ -151,21 +158,23 @@ struct BrowseView: View {
                     }
                 }
 
-                // Pinned top bar + category chips with a solid background so
-                // scrolling cards pass underneath, like the real app.
+                // Pinned top bar + category chips. The background is fully
+                // opaque and extends into the top safe area so the iPad status
+                // bar (time/battery) always sits on a solid bar — scrolling
+                // cards pass underneath instead of showing through it.
                 if account.isSignedIn {
                     VStack(spacing: 0) {
                         topBar
                         chipsBar
                     }
-                    .background(Color(UIColor.systemBackground).opacity(0.97))
+                    .background(Color(UIColor.systemBackground).edgesIgnoringSafeArea(.top))
                 }
 
                 if showSearch {
                     VStack {
                         HStack(spacing: 8) {
                             Image(systemName: "magnifyingglass").foregroundColor(.secondary)
-                            TextField("Search YouTube", text: $query, onCommit: submitSearch)
+                            TextField(L10n.tr("action.search"), text: $query, onCommit: submitSearch)
                                 .autocapitalization(.none).disableAutocorrection(true)
                             Button { showSearch = false; query = "" } label: {
                                 Image(systemName: "xmark").foregroundColor(.primary)
@@ -201,9 +210,9 @@ struct BrowseView: View {
                 Image(systemName: "magnifyingglass").font(.system(size: 20)).foregroundColor(.primary)
             }
             Menu {
-                Button { showSignIn = true } label: { Label("Account", systemImage: "person.circle") }
+                Button { showSignIn = true } label: { Label(L10n.tr("action.account"), systemImage: "person.circle") }
                 Button { UIApplication.shared.open(URL(string: "https://www.youtube.com/feed/you")!) } label: {
-                    Label("Open YouTube", systemImage: "safari")
+                    Label(L10n.tr("action.openYouTube"), systemImage: "safari")
                 }
             } label: {
                 Circle().fill(Color.accentColor.opacity(0.25))
@@ -252,6 +261,7 @@ struct BrowseView: View {
 }
 
 struct FeedCard: View {
+    @EnvironmentObject var library: Library
     let video: FeedVideo
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -291,9 +301,9 @@ struct FeedCard: View {
                 Spacer(minLength: 0)
 
                 Menu {
-                    Button { } label: { Label("Add to Watch later", systemImage: "clock") }
-                    Button { } label: { Label("Share", systemImage: "square.and.arrow.up") }
-                    Button { } label: { Label("Not interested", systemImage: "hand.thumbsdown") }
+                    Button { library.bookmark(video.video) } label: { Label(L10n.tr("card.watchLater"), systemImage: "clock") }
+                    Button { } label: { Label(L10n.tr("common.share"), systemImage: "square.and.arrow.up") }
+                    Button { } label: { Label(L10n.tr("card.notInterested"), systemImage: "hand.thumbsdown") }
                 } label: {
                     Image(systemName: "ellipsis.vertical")
                         .font(.system(size: 16)).foregroundColor(.secondary)
@@ -309,10 +319,10 @@ struct SignInView: View {
     let onSignIn: () -> Void
     var body: some View {
         EmptyStateView(
-            title: "Sign in to YouTube",
+            title: L10n.tr("signin.title"),
             systemImage: "person.crop.circle.badge.questionmark",
-            description: Text("Sign in with your Google account to see personalized recommendations, subscriptions and search."),
-            buttonTitle: "Sign in",
+            description: Text(L10n.tr("signin.desc")),
+            buttonTitle: L10n.tr("signin.button"),
             action: onSignIn
         )
     }
@@ -404,6 +414,10 @@ struct FullScreenPlayerView: View {
     @State private var disliked = false
     @State private var subscribed = false
     @State private var didLoadMeta = false
+    @State private var showPlayerSettings = false
+    @AppStorage("playerQuality") private var quality = "auto"
+    @AppStorage("playerSubtitles") private var subtitles = false
+    @AppStorage("speed") private var speed = 1.0
     let video: Video
 
     var body: some View {
@@ -412,7 +426,7 @@ struct FullScreenPlayerView: View {
             ZStack {
                 Color.black.edgesIgnoringSafeArea(.all)
                 if landscape {
-                    // Landscape: nothing but the player.
+                    // Landscape: nothing but the player + a settings gear.
                     PlayerSurface(player: playback.player)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                         .overlay(Group {
@@ -423,11 +437,16 @@ struct FullScreenPlayerView: View {
                             Button { playback.close() } label: {
                                 Image(systemName: "chevron.down")
                                     .font(.system(size: 18, weight: .semibold))
-                                    .foregroundColor(.white)
-                                    .padding(8)
+                                    .foregroundColor(.white).padding(8)
                                     .background(Circle().fill(Color.black.opacity(0.5)))
                             }
                             Spacer()
+                            Button { showPlayerSettings = true } label: {
+                                Image(systemName: "gearshape")
+                                    .font(.system(size: 18, weight: .semibold))
+                                    .foregroundColor(.white).padding(8)
+                                    .background(Circle().fill(Color.black.opacity(0.5)))
+                            }
                         }.padding()
                         Spacer()
                     }
@@ -435,18 +454,44 @@ struct FullScreenPlayerView: View {
                     // Portrait: player on top, details scrolling underneath.
                     ScrollView {
                         VStack(spacing: 0) {
-                            ZStack(alignment: .topLeading) {
+                            ZStack {
                                 PlayerSurface(player: playback.player)
                                     .frame(height: geo.size.width * 9 / 16)
                                 if playback.resolving { ProgressView().accentColor(.white) }
-                                // Back button stays reachable while loading and playing.
-                                Button { playback.close() } label: {
-                                    Image(systemName: "chevron.down")
-                                        .font(.system(size: 18, weight: .semibold))
-                                        .foregroundColor(.white)
-                                        .padding(8)
-                                        .background(Circle().fill(Color.black.opacity(0.5)))
+                                VStack {
+                                    HStack {
+                                        // Back button stays reachable while loading and playing.
+                                        Button { playback.close() } label: {
+                                            Image(systemName: "chevron.down")
+                                                .font(.system(size: 18, weight: .semibold))
+                                                .foregroundColor(.white).padding(8)
+                                                .background(Circle().fill(Color.black.opacity(0.5)))
+                                        }
+                                        Spacer()
+                                        // Top-right controls: cast, subtitles, settings.
+                                        HStack(spacing: 6) {
+                                            if tv.name != nil {
+                                                Button(action: cast) {
+                                                    Image(systemName: "airplayvideo")
+                                                        .foregroundColor(.white).padding(7)
+                                                        .background(Circle().fill(Color.black.opacity(0.5)))
+                                                }
+                                            }
+                                            Button { subtitles.toggle() } label: {
+                                                Image(systemName: subtitles ? "captions.bubble.fill" : "captions.bubble")
+                                                    .foregroundColor(.white).padding(7)
+                                                    .background(Circle().fill(Color.black.opacity(0.5)))
+                                            }
+                                            Button { showPlayerSettings = true } label: {
+                                                Image(systemName: "gearshape")
+                                                    .foregroundColor(.white).padding(7)
+                                                    .background(Circle().fill(Color.black.opacity(0.5)))
+                                            }
+                                        }
+                                    }
+                                    Spacer()
                                 }
+                                .frame(maxWidth: .infinity, maxHeight: .infinity)
                                 .padding(8)
                             }
                             detail
@@ -474,55 +519,76 @@ struct FullScreenPlayerView: View {
             if !resolving { load() }
         }
         .sheet(item: $webPlayer) { video in WebPlayer(url: video.watchURL).ignoresSafeArea() }
+        .sheet(isPresented: $showPlayerSettings) { PlayerSettingsSheet() }
     }
 
     private var detail: some View {
         VStack(alignment: .leading, spacing: 14) {
-            // Title and stats
-            VStack(alignment: .leading, spacing: 4) {
-                Text(playback.communityTitle ?? video.title)
-                    .font(.headline).foregroundColor(.primary).fixedSize(horizontal: false, vertical: true)
-                HStack(spacing: 6) {
-                    if let views = meta.views { Text(views) }
-                    if let date = meta.published { Text("· \(date)") }
-                    if let count = playback.dislikes { Text("· \(count) dislikes") }
+            // Title + expandable description row.
+            HStack(alignment: .top, spacing: 8) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(playback.communityTitle ?? video.title)
+                        .font(.headline).foregroundColor(.primary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    HStack(spacing: 6) {
+                        if let views = meta.views { Text(views) }
+                        if let date = meta.published {
+                            Text("· \(relativeDate(date))")
+                        }
+                    }
+                    .font(.caption).foregroundColor(.secondary)
+                    if playback.expanded {
+                        Text(video.title)
+                            .font(.caption).foregroundColor(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 }
-                .font(.caption).foregroundColor(.secondary)
+                Spacer(minLength: 0)
+                Button { playback.expanded.toggle() } label: {
+                    Image(systemName: playback.expanded ? "chevron.up" : "chevron.down")
+                        .foregroundColor(.secondary)
+                }
             }
 
-            // Action buttons
+            // Action buttons: like / dislike / share / download / save.
             HStack(spacing: 8) {
                 action(system: liked ? "hand.thumbsup.fill" : "hand.thumbsup",
-                       label: meta.likes ?? "Like", active: liked) {
+                       label: meta.likes ?? L10n.tr("common.like"), active: liked) {
                     liked.toggle(); if liked { disliked = false }
                 }
                 action(system: disliked ? "hand.thumbsdown.fill" : "hand.thumbsdown",
-                       label: "Dislike", active: disliked) {
+                       label: L10n.tr("common.dislike"), active: disliked) {
                     disliked.toggle(); if disliked { liked = false }
                 }
-                action(system: "square.and.arrow.up", label: "Share", active: false, tap: openWeb)
-                action(system: "arrow.down.to.line", label: "Download", active: false) {
+                action(system: "square.and.arrow.up", label: L10n.tr("common.share"), active: false, tap: openWeb)
+                action(system: "arrow.down.to.line", label: L10n.tr("common.download"), active: false) {
                     playback.save(video, audioOnly: false)
                 }
                 action(system: library.saved.contains(where: { $0.id == video.id }) ? "bookmark.fill" : "bookmark",
-                       label: "Save", active: library.saved.contains(where: { $0.id == video.id })) {
+                       label: library.saved.contains(where: { $0.id == video.id }) ? L10n.tr("common.saved") : L10n.tr("common.save"),
+                       active: library.saved.contains(where: { $0.id == video.id })) {
                     library.bookmark(video)
                 }
             }
 
-            // Channel row
+            // Channel row with subscriber count.
             HStack(spacing: 12) {
                 Circle().fill(Color.accentColor.opacity(0.2))
                     .overlay(Text((meta.author ?? "?").prefix(1).uppercased())
                         .font(.headline).foregroundColor(.accentColor))
                     .frame(width: 44, height: 44)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(meta.author ?? "YouTube channel").font(.subheadline.bold())
-                    Text("Channel").font(.caption).foregroundColor(.secondary)
+                    Text(meta.author ?? L10n.tr("common.channel")).font(.subheadline.bold())
+                    if let subs = meta.subscribers {
+                        Text("\(subs) \(L10n.tr("common.subscribers"))")
+                            .font(.caption).foregroundColor(.secondary)
+                    } else {
+                        Text(L10n.tr("common.channel")).font(.caption).foregroundColor(.secondary)
+                    }
                 }
                 Spacer()
                 Button { subscribed.toggle() } label: {
-                    Text(subscribed ? "Subscribed" : "Subscribe")
+                    Text(subscribed ? L10n.tr("common.subscribed") : L10n.tr("common.subscribe"))
                         .font(.subheadline.bold())
                         .padding(.horizontal, 16).padding(.vertical, 8)
                         .background(subscribed ? Color.secondary.opacity(0.2) : Color.primary)
@@ -531,11 +597,14 @@ struct FullScreenPlayerView: View {
                 }
             }
 
-            // Comments
+            // Comments row with count.
             Button(action: openWeb) {
                 HStack {
                     Image(systemName: "bubble.left").foregroundColor(.primary)
-                    Text("Comments").foregroundColor(.primary)
+                    Text(L10n.tr("common.comments")).foregroundColor(.primary)
+                    if let count = meta.comments {
+                        Text(count).foregroundColor(.secondary)
+                    }
                     Spacer()
                     Image(systemName: "chevron.right").foregroundColor(.secondary)
                 }
@@ -544,16 +613,14 @@ struct FullScreenPlayerView: View {
 
             // Up next
             if !related.isEmpty {
-                Text("Up next").font(.headline)
+                Text(L10n.tr("player.upNext")).font(.headline)
                 ForEach(related) { item in
                     Button { playback.open(item) } label: {
                         HStack(alignment: .top, spacing: 10) {
                             RemoteThumbnail(url: item.thumbnailURL)
-                                .frame(width: 120, height: 68).clipped()
-                                .cornerRadius(6)
+                                .frame(width: 120, height: 68).clipped().cornerRadius(6)
                             VStack(alignment: .leading, spacing: 3) {
-                                Text(item.title).font(.subheadline).lineLimit(3)
-                                    .foregroundColor(.primary)
+                                Text(item.title).font(.subheadline).lineLimit(3).foregroundColor(.primary)
                                 Text(item.id).font(.caption2).foregroundColor(.secondary)
                             }
                         }
@@ -563,14 +630,33 @@ struct FullScreenPlayerView: View {
 
             // More actions
             Menu {
-                Button("Download audio only") { playback.save(video, audioOnly: true) }
-                if let name = tv.name { Button("Play on \(name)", action: cast) }
-                Button("Open in YouTube", action: openWeb)
+                Button(L10n.tr("common.download") + " (audio)") { playback.save(video, audioOnly: true) }
+                if let name = tv.name { Button("\(L10n.tr("settings.playOnTV")): \(name)", action: cast) }
+                Button("\(L10n.tr("action.openYouTube"))", action: openWeb)
             } label: {
-                Label("More actions", systemImage: "ellipsis.circle")
+                Label(L10n.tr("player.moreActions"), systemImage: "ellipsis.circle")
             }
         }
         .padding()
+    }
+
+    private func relativeDate(_ iso: String) -> String {
+        let fmt = DateFormatter()
+        fmt.dateFormat = "yyyy-MM-dd"
+        guard let date = fmt.date(from: String(iso.prefix(10))) else { return iso }
+        let days = max(0, Int(Date().timeIntervalSince(date) / 86400))
+        if L10n.shared.effective == .simplifiedChinese {
+            if days == 0 { return "今天" }
+            if days == 1 { return "昨天" }
+            if days < 30 { return "\(days)天前" }
+            if days < 365 { return "\(days / 30)个月前" }
+            return "\(days / 365)年前"
+        }
+        if days == 0 { return "today" }
+        if days == 1 { return "yesterday" }
+        if days < 30 { return "\(days) days ago" }
+        if days < 365 { return "\(days / 30) months ago" }
+        return "\(days / 365) years ago"
     }
 
     private func action(system: String, label: String, active: Bool, tap: @escaping () -> Void) -> some View {
@@ -612,6 +698,96 @@ struct FullScreenPlayerView: View {
                 playback.message = "Could not send to TV. " + error.localizedDescription
             }
         }
+    }
+}
+
+/// Bottom settings panel opened from the player's gear icon.
+/// Mirrors the YouTube player sheet: quality, subtitles, speed, PiP, more.
+struct PlayerSettingsSheet: View {
+    @Environment(\.presentationMode) private var presentation
+    @AppStorage("playerQuality") private var quality = "auto"
+    @AppStorage("playerSubtitles") private var subtitles = false
+    @AppStorage("speed") private var speed = 1.0
+
+    private let speeds: [Double] = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2]
+
+    var body: some View {
+        NavigationView {
+            List {
+                Section {
+                    HStack {
+                        Label(L10n.tr("player.quality"), systemImage: "slider.horizontal.3")
+                        Spacer()
+                        Text(qualityLabel).foregroundColor(.secondary)
+                    }
+                    Toggle(isOn: $subtitles) {
+                        Label(L10n.tr("player.subtitles"), systemImage: "captions.bubble")
+                    }
+                    HStack {
+                        Label(L10n.tr("player.speed"), systemImage: "speedometer")
+                        Spacer()
+                        Picker("", selection: $speed) {
+                            ForEach(speeds, id: \.self) { value in
+                                Text(speedLabel(value)).tag(value)
+                            }
+                        }
+                        .pickerStyle(MenuPickerStyle())
+                        .labelsHidden()
+                    }
+                    Button { presentation.wrappedValue.dismiss() } label: {
+                        Label(L10n.tr("player.pip"), systemImage: "rectangle.on.rectangle")
+                    }
+                    NavigationLink(destination: moreView) {
+                        Label(L10n.tr("player.more"), systemImage: "gearshape.2")
+                    }
+                }
+            }
+            .navigationTitle(L10n.tr("player.settings"))
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button(L10n.tr("common.ok")) { presentation.wrappedValue.dismiss() }
+                }
+            }
+        }
+        .navigationViewStyle(StackNavigationViewStyle())
+    }
+
+    private var qualityLabel: String {
+        switch quality {
+        case "1080": return "1080p"
+        case "720": return "720p"
+        case "480": return "480p"
+        case "360": return "360p"
+        default: return L10n.tr("player.auto")
+        }
+    }
+
+    private func speedLabel(_ value: Double) -> String {
+        value == 1 ? L10n.tr("player.normal") : "\(value)×"
+    }
+
+    private var moreView: some View {
+        Form {
+            Section(header: Text(L10n.tr("player.quality"))) {
+                ForEach(["auto", "1080", "720", "480", "360"], id: \.self) { q in
+                    Button {
+                        quality = q
+                    } label: {
+                        HStack {
+                            Text(q == "auto" ? L10n.tr("player.auto") : "\(q)p")
+                            Spacer()
+                            if quality == q { Image(systemName: "checkmark").accentColor(.accentColor) }
+                        }
+                    }
+                    .foregroundColor(.primary)
+                }
+            }
+            Section(header: Text(L10n.tr("player.subtitles"))) {
+                Toggle(L10n.tr("player.off"), isOn: $subtitles)
+            }
+        }
+        .navigationTitle(L10n.tr("player.more"))
     }
 }
 

@@ -1,0 +1,125 @@
+import SwiftUI
+
+/// Standard, extensible localization layer.
+///
+/// To add a new language:
+///   1. Add a case to `AppLanguage` with its locale identifier.
+///   2. Add a `[String: String]` table under that case in `L10n.strings`.
+///   3. Add the display name in `AppLanguage.label`.
+/// No view code needs to change — all text resolves through `L10n.tr(...)`.
+enum AppLanguage: String, CaseIterable, Identifiable {
+    case system = "system"
+    case english = "en"
+    case simplifiedChinese = "zh-Hans"
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .system: return L10n.tr("lang.system", fallback: "Follow System")
+        case .english: return "English"
+        case .simplifiedChinese: return "简体中文"
+        }
+    }
+}
+
+/// Resolves the effective language from the user's choice (`.system` follows
+/// the device locale) and serves localized strings with a safe fallback.
+final class L10n: ObservableObject {
+    static let shared = L10n()
+
+    @Published var language: AppLanguage {
+        didSet { UserDefaults.standard.set(language.rawValue, forKey: "appLanguage") }
+    }
+
+    private init() {
+        let saved = UserDefaults.standard.string(forKey: "appLanguage") ?? AppLanguage.system.rawValue
+        language = AppLanguage(rawValue: saved) ?? .system
+    }
+
+    /// The concrete language to use, resolving "Follow System" via device locale.
+    var effective: AppLanguage {
+        guard language == .system else { return language }
+        let code = Locale.current.languageCode?.lowercased() ?? "en"
+        return code.hasPrefix("zh") ? .simplifiedChinese : .english
+    }
+
+    /// Look up a localized string. Falls back to English, then to the key.
+    static func tr(_ key: String, fallback: String? = nil) -> String {
+        let lang = L10n.shared.effective
+        return strings[lang]?[key] ?? strings[.english]?[key] ?? fallback ?? key
+    }
+
+    /// Instance convenience for SwiftUI views that observe changes.
+    func tr(_ key: String, fallback: String? = nil) -> String { L10n.tr(key, fallback: fallback) }
+
+    /// Keys are stable identifiers; values can be edited without touching views.
+    private static let strings: [AppLanguage: [String: String]] = [
+        .english: [
+            "lang.system": "Follow System",
+            "tab.home": "Home", "tab.shorts": "Shorts", "tab.subscriptions": "Subscriptions", "tab.you": "You",
+            "action.account": "Account", "action.openYouTube": "Open YouTube", "action.search": "Search YouTube",
+            "chip.all": "All", "chip.music": "Music", "chip.podcasts": "Podcasts", "chip.mixes": "Mixes",
+            "chip.live": "Live", "chip.travel": "Travel", "chip.recent": "Recently uploaded",
+            "chip.watched": "Watched", "chip.newToYou": "New to you",
+            "signin.title": "Sign in to YouTube",
+            "signin.desc": "Sign in with your Google account to see personalized recommendations, subscriptions and search.",
+            "signin.button": "Sign in",
+            "common.loading": "Loading…", "common.retry": "Retry", "common.ok": "OK",
+            "common.share": "Share", "common.download": "Download", "common.save": "Save",
+            "common.saved": "Saved", "common.like": "Like", "common.dislike": "Dislike",
+            "common.comments": "Comments", "common.channel": "Channel", "common.subscribers": "subscribers",
+            "common.subscribe": "Subscribe", "common.subscribed": "Subscribed",
+            "player.upNext": "Up next", "player.moreActions": "More actions",
+            "player.quality": "Quality", "player.subtitles": "Subtitles", "player.speed": "Playback speed",
+            "player.pip": "Picture in Picture", "player.more": "More", "player.auto": "Auto",
+            "player.off": "Off", "player.normal": "Normal", "player.settings": "Settings",
+            "card.watchLater": "Add to Watch later", "card.notInterested": "Not interested",
+            "settings.title": "Settings", "settings.language": "Language",
+            "settings.playback": "Playback", "settings.defaultSpeed": "Default speed",
+            "settings.community": "Community services",
+            "settings.community.footer": "Enabled services receive the current video ID. SponsorBlock supplies segments, DeArrow supplies titles, and Return YouTube Dislike supplies counts.",
+            "settings.skipSponsors": "Skip sponsors and self-promotion",
+            "settings.dearrow": "Show DeArrow titles", "settings.dislikes": "Show estimated dislikes",
+            "settings.playOnTV": "Play on TV",
+            "settings.tv.footer": "Find the pairing code in SmartTube or YouTube on your TV. After pairing, select your TV in the player menu.",
+            "settings.pairedTV": "Paired TV", "settings.forgetTV": "Forget TV",
+            "settings.tvCode": "12-digit TV code", "settings.pairTV": "Pair TV", "settings.pairing": "Pairing…",
+            "settings.library": "Library", "settings.clearHistory": "Clear local watch history",
+            "settings.about": "About", "settings.credits": "Credits and licenses",
+        ],
+        .simplifiedChinese: [
+            "lang.system": "跟随系统",
+            "tab.home": "首页", "tab.shorts": "Shorts", "tab.subscriptions": "订阅", "tab.you": "我",
+            "action.account": "账号", "action.openYouTube": "打开 YouTube", "action.search": "搜索 YouTube",
+            "chip.all": "全部", "chip.music": "音乐", "chip.podcasts": "播客", "chip.mixes": "混排",
+            "chip.live": "直播", "chip.travel": "旅行", "chip.recent": "最近上传",
+            "chip.watched": "已观看", "chip.newToYou": "为你推荐",
+            "signin.title": "登录 YouTube",
+            "signin.desc": "使用你的 Google 账号登录，查看个性化推荐、订阅内容和搜索结果。",
+            "signin.button": "登录",
+            "common.loading": "加载中…", "common.retry": "重试", "common.ok": "好",
+            "common.share": "分享", "common.download": "下载", "common.save": "保存",
+            "common.saved": "已保存", "common.like": "点赞", "common.dislike": "点踩",
+            "common.comments": "评论", "common.channel": "频道", "common.subscribers": "位订阅者",
+            "common.subscribe": "订阅", "common.subscribed": "已订阅",
+            "player.upNext": "即将播放", "player.moreActions": "更多操作",
+            "player.quality": "画质", "player.subtitles": "字幕", "player.speed": "播放速度",
+            "player.pip": "画中画", "player.more": "更多", "player.auto": "自动",
+            "player.off": "关", "player.normal": "正常", "player.settings": "设置",
+            "card.watchLater": "添加到稍后观看", "card.notInterested": "不感兴趣",
+            "settings.title": "设置", "settings.language": "语言",
+            "settings.playback": "播放", "settings.defaultSpeed": "默认速度",
+            "settings.community": "社区服务",
+            "settings.community.footer": "启用的服务会收到当前视频 ID。SponsorBlock 提供跳过片段，DeArrow 提供标题，Return YouTube Dislike 提供点踩数。",
+            "settings.skipSponsors": "跳过赞助和自我介绍",
+            "settings.dearrow": "显示 DeArrow 标题", "settings.dislikes": "显示估算点踩数",
+            "settings.playOnTV": "投屏到电视",
+            "settings.tv.footer": "在电视上的 SmartTube 或 YouTube 中查找配对码。配对后，在播放器菜单中选择你的电视。",
+            "settings.pairedTV": "已配对电视", "settings.forgetTV": "忘记电视",
+            "settings.tvCode": "12 位电视配对码", "settings.pairTV": "配对电视", "settings.pairing": "配对中…",
+            "settings.library": "资料库", "settings.clearHistory": "清除本地观看历史",
+            "settings.about": "关于", "settings.credits": "鸣谢与许可",
+        ],
+    ]
+}

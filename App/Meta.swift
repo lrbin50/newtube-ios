@@ -9,6 +9,8 @@ struct VideoMeta {
     var views: String?
     var likes: String?
     var published: String?
+    var subscribers: String?
+    var comments: String?
 }
 
 enum Meta {
@@ -43,11 +45,13 @@ enum Meta {
             if let details = json["videoDetails"] as? [String: Any] {
                 if meta.author == nil { meta.author = details["author"] as? String }
                 if let raw = details["viewCount"] as? String { meta.views = formatted(raw) }
+                if let raw = details["commentCount"] as? String { meta.comments = formattedBare(raw) }
             }
             if let micro = json["microformat"] as? [String: Any],
                let renderer = micro["playerMicroformatRenderer"] as? [String: Any] {
                 meta.published = renderer["publishDate"] as? String
-                if let raw = renderer["likeCount"] as? String { meta.likes = formatted(raw) }
+                if let raw = renderer["likeCount"] as? String { meta.likes = formattedBare(raw) }
+                if let raw = renderer["ownerChannelName"] as? String { meta.author = meta.author ?? raw }
             }
         }
         return meta
@@ -108,12 +112,19 @@ enum Meta {
     }
 
     private static func formatted(_ raw: String) -> String? {
+        guard let body = formattedBare(raw) else { return nil }
+        let isZh = L10n.shared.effective == .simplifiedChinese
+        return body + (isZh ? "次观看" : " views")
+    }
+
+    /// Compact number without a suffix (for likes/subscribers).
+    private static func formattedBare(_ raw: String) -> String? {
         guard let value = Double(raw) else { return nil }
         switch value {
-        case 1_000_000_000...: return String(format: "%.1fB views", value / 1_000_000_000)
-        case 1_000_000...: return String(format: "%.1fM views", value / 1_000_000)
-        case 1_000...: return String(format: "%.1fK views", value / 1_000)
-        default: return "\(Int(value)) views"
+        case 1_000_000_000...: return String(format: "%.1fB", value / 1_000_000_000)
+        case 1_000_000...: return String(format: "%.1fM", value / 1_000_000)
+        case 1_000...: return String(format: "%.1fK", value / 1_000)
+        default: return "\(Int(value))"
         }
     }
 }
