@@ -495,6 +495,7 @@ struct FullScreenPlayerView: View {
     @EnvironmentObject var playback: Playback
     @EnvironmentObject var library: Library
     @EnvironmentObject var tv: Television
+    @ObservedObject private var avatars = ChannelAvatarStore.shared
     @State private var webPlayer: Video?
     @State private var meta = VideoMeta()
     @State private var related: [Video] = []
@@ -516,6 +517,12 @@ struct FullScreenPlayerView: View {
     @AppStorage("playerSubtitles") private var subtitles = false
     @AppStorage("speed") private var speed = 1.0
     let video: Video
+
+    /// Reuse the avatar already resolved by the home feed / subscriptions
+    /// instead of waiting for the player's own metadata request.
+    private var resolvedChannelAvatar: URL? {
+        avatars.avatar(channel: meta.author, forVideo: video.id) ?? meta.avatarURL
+    }
 
     var body: some View {
         GeometryReader { geo in
@@ -611,7 +618,7 @@ struct FullScreenPlayerView: View {
             ChannelProfileView(
                 channelID: meta.channelID,
                 name: meta.author,
-                avatarURL: meta.avatarURL,
+                avatarURL: resolvedChannelAvatar,
                 bannerURL: meta.bannerURL,
                 subscribers: meta.subscribers
             )
@@ -770,7 +777,7 @@ struct FullScreenPlayerView: View {
             // that opens the creator's channel page.
             HStack(spacing: 12) {
                 Button { showChannel = true } label: {
-                    ChannelAvatarView(name: meta.author, url: meta.avatarURL, size: 44)
+                    ChannelAvatarView(name: meta.author, url: resolvedChannelAvatar, size: 44)
                 }
                 .buttonStyle(.plain)
                 Button { showChannel = true } label: {
@@ -885,7 +892,18 @@ struct FullScreenPlayerView: View {
             async let loaded = Meta.load(video)
             async let suggestions = Meta.related(to: video)
             let (info, next) = await (loaded, suggestions)
-            await MainActor.run { meta = info; related = next }
+            await MainActor.run {
+                meta = info
+                related = next
+                if let url = info.avatarURL {
+                    // Share whatever the player resolved with feed / subscriptions.
+                    avatars.cache(url: url, forVideo: video.id, channel: info.author)
+                } else {
+                    // No avatar from player metadata: reuse the same on-demand
+                    // resolver as the feed, deduplicated by the shared store.
+                    avatars.load(video: video.id, channel: info.author)
+                }
+            }
         }
     }
 

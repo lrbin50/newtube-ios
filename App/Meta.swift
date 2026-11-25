@@ -79,6 +79,14 @@ struct VideoMeta {
         inflightChannels[name] = task
     }
 
+    /// Seed the shared cache with an avatar resolved by another surface (for
+    /// example the player page's Meta.load). The first URL wins so a cheaper
+    /// cached avatar is never replaced by a later, slower request.
+    func cache(url: URL, forVideo id: String, channel: String?) {
+        if avatars[id] == nil { avatars[id] = url }
+        if let name = channel, byChannel[name] == nil { byChannel[name] = url }
+    }
+
     /// Synchronous read used by views to pick the best available avatar.
     func avatar(channel: String?, forVideo id: String) -> URL? {
         if let name = channel, let url = byChannel[name] { return url }
