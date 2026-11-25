@@ -226,6 +226,9 @@ struct PlayerSurface: UIViewControllerRepresentable {
     func makeUIViewController(context: Context) -> AVPlayerViewController {
         let view = AVPlayerViewController()
         view.player = player
+        // The player page draws its own bright, single control layer. Native
+        // controls are grey and overlapped our buttons while the stream loaded.
+        view.showsPlaybackControls = false
         view.allowsPictureInPicturePlayback = true
         if #available(iOS 14.2, *) {
             view.canStartPictureInPictureAutomaticallyFromInline = true

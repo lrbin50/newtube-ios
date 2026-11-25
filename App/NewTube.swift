@@ -424,6 +424,10 @@ struct FullScreenPlayerView: View {
     @State private var subscribed = false
     @State private var didLoadMeta = false
     @State private var showPlayerSettings = false
+    @State private var playhead: Double = 0
+    @State private var duration: Double = 0
+    @State private var seeking = false
+    @State private var ticker: Timer?
     @AppStorage("playerQuality") private var quality = "auto"
     @AppStorage("playerSubtitles") private var subtitles = false
     @AppStorage("speed") private var speed = 1.0
@@ -435,29 +439,13 @@ struct FullScreenPlayerView: View {
             ZStack {
                 Color.black.edgesIgnoringSafeArea(.all)
                 if landscape {
-                    // Landscape: nothing but the player + a settings gear.
-                    PlayerSurface(player: playback.player)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .overlay(Group {
-                            if playback.resolving { ProgressView().accentColor(.white) }
-                        })
-                    VStack {
-                        HStack {
-                            Button { playback.close() } label: {
-                                Image(systemName: "chevron.down")
-                                    .font(.system(size: 18, weight: .semibold))
-                                    .foregroundColor(.white).padding(8)
-                                    .background(Circle().fill(Color.black.opacity(0.5)))
-                            }
-                            Spacer()
-                            Button { showPlayerSettings = true } label: {
-                                Image(systemName: "gearshape")
-                                    .font(.system(size: 18, weight: .semibold))
-                                    .foregroundColor(.white).padding(8)
-                                    .background(Circle().fill(Color.black.opacity(0.5)))
-                            }
-                        }.padding()
-                        Spacer()
+                    // Landscape: the player fills the screen with the same
+                    // control layer used in portrait.
+                    ZStack {
+                        PlayerSurface(player: playback.player)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        if playback.resolving { ProgressView().accentColor(.white) }
+                        playerControls
                     }
                 } else {
                     // Portrait: player on top, details scrolling underneath.
@@ -467,41 +455,7 @@ struct FullScreenPlayerView: View {
                                 PlayerSurface(player: playback.player)
                                     .frame(height: geo.size.width * 9 / 16)
                                 if playback.resolving { ProgressView().accentColor(.white) }
-                                VStack {
-                                    HStack {
-                                        // Back button stays reachable while loading and playing.
-                                        Button { playback.close() } label: {
-                                            Image(systemName: "chevron.down")
-                                                .font(.system(size: 18, weight: .semibold))
-                                                .foregroundColor(.white).padding(8)
-                                                .background(Circle().fill(Color.black.opacity(0.5)))
-                                        }
-                                        Spacer()
-                                        // Top-right controls: cast, subtitles, settings.
-                                        HStack(spacing: 6) {
-                                            if tv.name != nil {
-                                                Button(action: cast) {
-                                                    Image(systemName: "airplayvideo")
-                                                        .foregroundColor(.white).padding(7)
-                                                        .background(Circle().fill(Color.black.opacity(0.5)))
-                                                }
-                                            }
-                                            Button { subtitles.toggle() } label: {
-                                                Image(systemName: subtitles ? "captions.bubble.fill" : "captions.bubble")
-                                                    .foregroundColor(.white).padding(7)
-                                                    .background(Circle().fill(Color.black.opacity(0.5)))
-                                            }
-                                            Button { showPlayerSettings = true } label: {
-                                                Image(systemName: "gearshape")
-                                                    .foregroundColor(.white).padding(7)
-                                                    .background(Circle().fill(Color.black.opacity(0.5)))
-                                            }
-                                        }
-                                    }
-                                    Spacer()
-                                }
-                                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                                .padding(8)
+                                playerControls
                             }
                             detail
                         }
@@ -523,12 +477,98 @@ struct FullScreenPlayerView: View {
         }
         // Defer detail/network-heavy work until the stream is ready, so it does
         // not compete with video resolution on a slow connection.
-        .onAppear { if !playback.resolving { load() } }
+        .onAppear {
+            if !playback.resolving { load() }
+            startTicker()
+        }
+        .onDisappear { ticker?.invalidate() }
         .onChange(of: playback.resolving) { resolving in
             if !resolving { load() }
         }
         .sheet(item: $webPlayer) { video in WebPlayer(url: video.watchURL).ignoresSafeArea() }
         .sheet(isPresented: $showPlayerSettings) { PlayerSettingsSheet() }
+    }
+
+    /// A single, high-contrast control layer. AVPlayerViewController's grey
+    /// controls are disabled, so no second set of buttons can overlap ours
+    /// while the stream is resolving.
+    private var playerControls: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                controlButton(system: "chevron.down", size: 18) { playback.close() }
+                Spacer()
+                if tv.name != nil {
+                    controlButton(system: "airplayvideo", size: 16, action: cast)
+                }
+                controlButton(system: subtitles ? "captions.bubble.fill" : "captions.bubble", size: 16) {
+                    subtitles.toggle()
+                }
+                controlButton(system: "gearshape", size: 16) { showPlayerSettings = true }
+            }
+            .padding(.horizontal, 10)
+            .padding(.top, 8)
+
+            Spacer()
+
+            if !playback.resolving {
+                HStack(spacing: 10) {
+                    controlButton(system: playback.playing ? "pause.fill" : "play.fill", size: 15) {
+                        if playback.playing { playback.player.pause() } else { playback.resume() }
+                    }
+                    Text(timeString(playhead))
+                        .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                        .foregroundColor(.white)
+                        .shadow(radius: 1)
+                    Slider(value: $playhead, in: 0...max(duration, 1), onEditingChanged: { editing in
+                        self.seeking = editing
+                        if !editing { self.playback.seek(self.playhead) }
+                    })
+                    .accentColor(.red)
+                    Text(timeString(duration))
+                        .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                        .foregroundColor(.white)
+                        .shadow(radius: 1)
+                }
+                .padding(.horizontal, 12)
+                .padding(.bottom, 10)
+            }
+        }
+    }
+
+    private func controlButton(system: String, size: CGFloat,
+                               action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: system)
+                .font(.system(size: size, weight: .semibold))
+                .foregroundColor(.white)
+                .padding(8)
+                .background(Circle().fill(Color.black.opacity(0.6)))
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func timeString(_ seconds: Double) -> String {
+        guard seconds.isFinite, seconds > 0 else { return "0:00" }
+        let total = Int(seconds)
+        let hours = total / 3600
+        let minutes = (total % 3600) / 60
+        let secs = total % 60
+        return hours > 0
+            ? String(format: "%d:%02d:%02d", hours, minutes, secs)
+            : String(format: "%d:%02d", minutes, secs)
+    }
+
+    private func startTicker() {
+        ticker?.invalidate()
+        let player = playback.player
+        ticker = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { _ in
+            let current = player.currentTime().seconds
+            let total = player.currentItem?.duration.seconds ?? 0
+            DispatchQueue.main.async {
+                if !self.seeking, current.isFinite { self.playhead = current }
+                if total.isFinite { self.duration = total }
+            }
+        }
     }
 
     private var detail: some View {
@@ -647,6 +687,7 @@ struct FullScreenPlayerView: View {
             }
         }
         .padding()
+        .background(Color(UIColor.systemBackground))
     }
 
     private func relativeDate(_ iso: String) -> String {
