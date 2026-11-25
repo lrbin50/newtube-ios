@@ -55,6 +55,9 @@ struct RootView: View {
             if index == 0 { Task { await Feed.shared.load(.home) } }
             if index == 2 { Task { await Feed.shared.load(.subscriptions) } }
         }
+        .onReceive(NotificationCenter.default.publisher(for: .switchToHomeTab)) { _ in
+            selection = 0
+        }
         // Any video being opened takes over the whole screen.
         .fullScreenCover(item: Binding(get: { playback.current }, set: { _ in })) { video in
             FullScreenPlayerView(video: video)
@@ -841,75 +844,254 @@ struct PlayerSettingsSheet: View {
     }
 }
 
+/// The You tab, styled after the YouTube tablet app: account header,
+/// horizontally scrolling History/Playlists shelves, then a settings-style
+/// list. Downloads stays as its own entry right below Your videos.
 struct LibraryView: View {
     @EnvironmentObject var library: Library
     @EnvironmentObject var playback: Playback
     @EnvironmentObject var tv: Television
-    @State private var category = "Watch later"
+    @ObservedObject private var account = Account.shared
     @State private var showSettings = false
-    let categories = ["Watch later", "Downloads", "History"]
-    var videos: [Video] {
-        switch category {
-        case "Downloads": return library.downloads
-        case "History": return library.history
-        default: return library.saved
-        }
+    @State private var showSearch = false
+    @State private var searchText = ""
+
+    enum Collection: String {
+        case myVideos, downloads, films, watchTime
     }
+
     var body: some View {
         NavigationView {
-            VStack {
-                Picker("Collection", selection: $category) {
-                    ForEach(categories, id: \.self) { Text($0) }
-                }.pickerStyle(.segmented).padding(.horizontal)
-                if videos.isEmpty {
-                    EmptyStateView(
-                        title: category,
-                        systemImage: category == "Downloads" ? "arrow.down.circle" : "rectangle.stack",
-                        description: Text(category == "Downloads" ? "Download a video or its audio from the player menu to play it offline."
-                            : category == "History" ? "Videos you play appear here." : "Save videos using Watch later in the player menu.")
-                    )
-                } else {
-                    List(videos) { video in
-                        Button { playback.open(video) } label: {
-                            HStack {
-                                RemoteThumbnail(url: video.thumbnailURL)
-                                    .frame(width: 90, height: 52).clipped().clipShape(RoundedRectangle(cornerRadius: 5))
-                                Text(video.title).lineLimit(3).foregroundColor(.primary)
-                            }
-                        }
-                        .contextMenu {
-                            Button("Add to queue") { playback.enqueue(video) }
-                            Button(library.saved.contains(where: { $0.id == video.id }) ? "Remove from Watch later" : "Watch later") { library.bookmark(video) }
-                            ShareButton(url: video.watchURL)
-                            if category == "Downloads" { Button("Delete download") {
-                                do { try library.removeDownload(video) } catch { playback.message = error.localizedDescription }
-                            }.foregroundColor(.red) }
-                        }
-                    }.listStyle(.plain)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    accountHeader
+                    if !library.history.isEmpty {
+                        shelf(title: L10n.tr("you.history"), videos: library.history)
+                    }
+                    if !library.saved.isEmpty {
+                        shelf(title: L10n.tr("you.playlists"), videos: library.saved)
+                    }
+                    VStack(spacing: 0) {
+                        row(icon: "video", title: L10n.tr("you.myVideos"), kind: .myVideos)
+                        row(icon: "arrow.down.circle", title: L10n.tr("common.download"), kind: .downloads)
+                        row(icon: "film", title: L10n.tr("you.films"), kind: .films)
+                        row(icon: "clock", title: L10n.tr("you.watchTime"), kind: .watchTime)
+                    }
+                    .padding(.top, 6)
                 }
-            }.navigationTitle("You")
+            }
+            .navigationTitle(L10n.tr("tab.you"))
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
-                    Button { showSettings = true } label: {
-                        Image(systemName: "gearshape")
-                    }
-                }
-                ToolbarItem(placement: .navigationBarLeading) {
-                    if videos.count > 1 {
-                        Menu {
-                            Button("Play all") { play(videos) }
-                            Button("Shuffle") { play(videos.shuffled()) }
-                        } label: {
-                            Label("Play", systemImage: "text.line.first.and.arrowtriangle.forward")
-                        }
+                    HStack(spacing: 16) {
+                        Button { } label: { Image(systemName: "bell") }
+                        Button { showSearch = true } label: { Image(systemName: "magnifyingglass") }
+                        Button { showSettings = true } label: { Image(systemName: "gearshape") }
                     }
                 }
             }
         }
         .navigationViewStyle(StackNavigationViewStyle())
         .sheet(isPresented: $showSettings) { SettingsView().environmentObject(tv) }
+        .sheet(isPresented: $showSearch) {
+            NavigationView {
+                VStack {
+                    TextField(L10n.tr("action.search"), text: $searchText)
+                        .textFieldStyle(RoundedBorderTextFieldStyle()).padding()
+                    Button(L10n.tr("action.search")) {
+                        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+                        guard !query.isEmpty else { return }
+                        showSearch = false
+                        Task {
+                            await Feed.shared.load(.search(query))
+                            NotificationCenter.default.post(name: .switchToHomeTab, object: nil)
+                        }
+                    }.buttonStyle(.bordered)
+                    Spacer()
+                }
+                .navigationTitle(L10n.tr("action.search"))
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .navigationBarTrailing) {
+                        Button(L10n.tr("common.ok")) { showSearch = false }
+                    }
+                }
+            }
+            .navigationViewStyle(StackNavigationViewStyle())
+        }
     }
-    private func play(_ items: [Video]) {
-        playback.playCollection(items)
+
+    private var accountHeader: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 12) {
+                Circle()
+                    .fill(LinearGradient(gradient: Gradient(colors: [Color.blue, Color(UIColor.systemTeal)]),
+                                         startPoint: .topLeading, endPoint: .bottomTrailing))
+                    .frame(width: 54, height: 54)
+                    .overlay(
+                        Text((account.accountName ?? "Y").prefix(1).uppercased())
+                            .font(.system(size: 22, weight: .bold)).foregroundColor(.white)
+                    )
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(account.accountName ?? L10n.tr("signin.title"))
+                        .font(.system(size: 20, weight: .bold))
+                    Text("@" + (account.accountName ?? "you"))
+                        .font(.caption).foregroundColor(.secondary)
+                    Button { } label: {
+                        Text(L10n.tr("you.viewChannel")).font(.caption2).foregroundColor(.secondary)
+                    }
+                }
+                Spacer()
+            }
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 16) {
+                    Button { } label: { Text(L10n.tr("you.creator")) }
+                    Button { } label: { Text(L10n.tr("you.googleAccount")) }
+                    Button { } label: { Text(L10n.tr("you.incognito")) }
+                    Button { showSettings = true } label: { Text(L10n.tr("you.shareSettings")) }
+                }
+                .font(.caption2).foregroundColor(.secondary)
+            }
+        }
+        .padding(.horizontal, 16).padding(.vertical, 14)
     }
+
+    private func shelf(title: String, videos: [Video]) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title).font(.headline).padding(.horizontal, 16)
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 12) {
+                    ForEach(videos.prefix(16)) { video in
+                        Button { playback.open(video) } label: {
+                            VStack(alignment: .leading, spacing: 6) {
+                                RemoteThumbnail(url: video.thumbnailURL)
+                                    .frame(width: 190, height: 107).clipped().cornerRadius(8)
+                                Text(video.title)
+                                    .font(.caption).foregroundColor(.primary)
+                                    .lineLimit(2).multilineTextAlignment(.leading)
+                            }
+                            .frame(width: 190, alignment: .leading)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }.padding(.horizontal, 16)
+            }
+        }.padding(.bottom, 14)
+    }
+
+    private func row(icon: String, title: String, kind: Collection) -> some View {
+        NavigationLink(destination: collectionView(kind)) {
+            HStack(spacing: 14) {
+                Image(systemName: icon)
+                    .font(.system(size: 18)).frame(width: 24).foregroundColor(.primary)
+                Text(title).font(.body).foregroundColor(.primary)
+                Spacer()
+                Image(systemName: "chevron.right").font(.caption).foregroundColor(.secondary)
+            }
+            .padding(.horizontal, 16).padding(.vertical, 12)
+            .background(Color(UIColor.systemBackground))
+        }.buttonStyle(.plain)
+    }
+
+    @ViewBuilder
+    private func collectionView(_ kind: Collection) -> some View {
+        if kind == .watchTime {
+            EmptyStateView(title: L10n.tr("you.watchTime"), systemImage: "clock",
+                           description: Text(L10n.tr("you.watchTime.desc")))
+                .navigationTitle(L10n.tr("you.watchTime"))
+        } else {
+            CollectionListView(kind: kind)
+        }
+    }
+}
+
+/// Video list behind a You-tab row (Your videos / Downloads / Films).
+struct CollectionListView: View {
+    @EnvironmentObject var library: Library
+    @EnvironmentObject var playback: Playback
+    let kind: LibraryView.Collection
+
+    private var videos: [Video] {
+        switch kind {
+        case .downloads: return library.downloads
+        case .films: return library.history
+        default: return library.saved
+        }
+    }
+
+    private var title: String {
+        switch kind {
+        case .downloads: return L10n.tr("common.download")
+        case .films: return L10n.tr("you.films")
+        default: return L10n.tr("you.myVideos")
+        }
+    }
+
+    private var description: String {
+        switch kind {
+        case .downloads: return L10n.tr("you.downloads.desc")
+        case .films: return L10n.tr("you.history.desc")
+        default: return L10n.tr("you.saved.desc")
+        }
+    }
+
+    private var icon: String {
+        switch kind {
+        case .downloads: return "arrow.down.circle"
+        case .films: return "film"
+        default: return "rectangle.stack"
+        }
+    }
+
+    var body: some View {
+        Group {
+            if videos.isEmpty {
+                EmptyStateView(title: title, systemImage: icon, description: Text(description))
+            } else {
+                List(videos) { video in
+                    Button { playback.open(video) } label: {
+                        HStack {
+                            RemoteThumbnail(url: video.thumbnailURL)
+                                .frame(width: 90, height: 52).clipped()
+                                .clipShape(RoundedRectangle(cornerRadius: 5))
+                            Text(video.title).lineLimit(3).foregroundColor(.primary)
+                        }
+                    }
+                    .contextMenu {
+                        Button(L10n.tr("you.addToQueue")) { playback.enqueue(video) }
+                        Button(library.saved.contains(where: { $0.id == video.id })
+                               ? L10n.tr("you.removeSaved") : L10n.tr("card.watchLater")) {
+                            library.bookmark(video)
+                        }
+                        ShareButton(url: video.watchURL)
+                        if kind == .downloads {
+                            Button(L10n.tr("you.deleteDownload")) {
+                                do { try library.removeDownload(video) }
+                                catch { playback.message = error.localizedDescription }
+                            }.foregroundColor(.red)
+                        }
+                    }
+                }.listStyle(.plain)
+            }
+        }
+        .navigationTitle(title)
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .navigationBarLeading) {
+                if videos.count > 1 {
+                    Menu {
+                        Button(L10n.tr("you.playAll")) { playback.playCollection(videos) }
+                        Button(L10n.tr("you.shuffle")) { playback.playCollection(videos.shuffled()) }
+                    } label: {
+                        Label(L10n.tr("you.play"), systemImage: "text.line.first.and.arrowtriangle.forward")
+                    }
+                }
+            }
+        }
+    }
+}
+
+extension Notification.Name {
+    static let switchToHomeTab = Notification.Name("switchToHomeTab")
 }
