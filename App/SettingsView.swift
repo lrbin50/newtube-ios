@@ -4,6 +4,7 @@ struct SettingsView: View {
     @EnvironmentObject var library: Library
     @EnvironmentObject var playback: Playback
     @EnvironmentObject var tv: Television
+    @Environment(\.presentationMode) private var presentation
     @ObservedObject private var account = Account.shared
     @ObservedObject private var l10n = L10n.shared
     @AppStorage("sponsorBlock") private var skip = true
@@ -102,6 +103,21 @@ struct SettingsView: View {
                 }
             }
             .navigationTitle(L10n.tr("settings.title"))
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                // Settings is presented as a sheet; give it an explicit
+                // back/close button so it can always be dismissed.
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button {
+                        presentation.wrappedValue.dismiss()
+                    } label: {
+                        HStack(spacing: 2) {
+                            Image(systemName: "chevron.left")
+                            Text(L10n.tr("common.back", fallback: "Back"))
+                        }
+                    }
+                }
+            }
             .onChange(of: speed) { _ in if playback.playing { playback.resume() } }
             .onChange(of: skip) { _ in playback.refreshCommunity() }
             .onChange(of: titles) { _ in playback.refreshCommunity() }

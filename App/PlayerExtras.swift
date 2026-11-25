@@ -46,11 +46,17 @@ struct MiniPlayerView: View {
 
     var body: some View {
         ZStack(alignment: .topTrailing) {
-            // Live video surface — the same AVPlayer keeps rendering here.
-            PlayerSurface(player: playback.player)
-            if playback.resolving {
-                ResolvingOverlay()
-            }
+            // Static cover instead of an embedded AVPlayerViewController.
+            // On iOS 14 the UIKit player view escapes its SwiftUI frame when
+            // hosted inside an overlay and paints a large blue circle over the
+            // tab bar (visible on every tab). The shared AVPlayer keeps
+            // playing the audio; tapping restores the full-screen video.
+            RemoteThumbnail(url: video.thumbnailURL)
+                .frame(width: 220, height: 124)
+            Color.black.opacity(0.22)
+            Image(systemName: playback.playing ? "pause.circle.fill" : "play.circle.fill")
+                .font(.system(size: 30))
+                .foregroundColor(.white.opacity(0.92))
             HStack(spacing: 6) {
                 Button {
                     playback.restore()
@@ -70,9 +76,10 @@ struct MiniPlayerView: View {
             .padding(8)
         }
         .frame(width: 220, height: 124)
+        .clipped()
         .clipShape(RoundedRectangle(cornerRadius: 12))
         .shadow(color: Color.black.opacity(0.35), radius: 8, x: 0, y: 3)
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.black.opacity(0.2), lineWidth: 0.5))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.white.opacity(0.15), lineWidth: 0.5))
         .contentShape(RoundedRectangle(cornerRadius: 12))
         .onTapGesture { playback.restore() }
         .padding(12)

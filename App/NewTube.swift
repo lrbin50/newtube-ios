@@ -979,9 +979,29 @@ struct LibraryView: View {
                     .padding(.top, 6)
                 }
             }
-            .navigationTitle(L10n.tr("tab.you"))
+            .navigationTitle("")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                // Title bar shows the signed-in avatar + name (or a sign-in
+                // button). Replaces the standalone "You" title and the big
+                // header avatar below, which wasted a full row.
+                ToolbarItem(placement: .principal) {
+                    Button { showSignIn = true } label: {
+                        HStack(spacing: 6) {
+                            accountAvatar(size: 26)
+                            if account.isSignedIn {
+                                Text(account.accountName ?? L10n.tr("you.signedIn"))
+                                    .font(.system(size: 14, weight: .semibold))
+                                    .foregroundColor(.primary).lineLimit(1)
+                            } else {
+                                Text(L10n.tr("signin.button"))
+                                    .font(.system(size: 14, weight: .semibold))
+                                    .foregroundColor(.accentColor).lineLimit(1)
+                            }
+                        }
+                    }
+                    .buttonStyle(.plain)
+                }
                 ToolbarItem(placement: .navigationBarTrailing) {
                     HStack(spacing: 16) {
                         Button { } label: { Image(systemName: "bell") }
@@ -1032,53 +1052,30 @@ struct LibraryView: View {
         }
     }
 
+    /// Reusable circular account avatar: real Google photo, a remote URL, or
+    /// an initial-letter gradient placeholder while signed out.
+    @ViewBuilder
+    private func accountAvatar(size: CGFloat) -> some View {
+        if let image = account.avatarImage {
+            Image(uiImage: image).resizable().scaledToFill()
+                .frame(width: size, height: size).clipShape(Circle())
+        } else if let url = account.avatarURL {
+            RemoteThumbnail(url: url)
+                .frame(width: size, height: size).clipped().clipShape(Circle())
+        } else {
+            Circle()
+                .fill(LinearGradient(gradient: Gradient(colors: [Color.blue, Color(UIColor.systemTeal)]),
+                                     startPoint: .topLeading, endPoint: .bottomTrailing))
+                .frame(width: size, height: size)
+                .overlay(
+                    Text((account.accountName ?? "Y").prefix(1).uppercased())
+                        .font(.system(size: size * 0.42, weight: .bold)).foregroundColor(.white)
+                )
+        }
+    }
+
     private var accountHeader: some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 12) {
-                // Real Google account photo when available, otherwise the
-                // initial-letter gradient placeholder.
-                if let image = account.avatarImage {
-                    Image(uiImage: image).resizable().scaledToFill()
-                        .frame(width: 54, height: 54).clipShape(Circle())
-                } else if let url = account.avatarURL {
-                    RemoteThumbnail(url: url)
-                        .frame(width: 54, height: 54).clipped().clipShape(Circle())
-                } else {
-                    Circle()
-                        .fill(LinearGradient(gradient: Gradient(colors: [Color.blue, Color(UIColor.systemTeal)]),
-                                             startPoint: .topLeading, endPoint: .bottomTrailing))
-                        .frame(width: 54, height: 54)
-                        .overlay(
-                            Text((account.accountName ?? "Y").prefix(1).uppercased())
-                                .font(.system(size: 22, weight: .bold)).foregroundColor(.white)
-                        )
-                }
-                VStack(alignment: .leading, spacing: 2) {
-                    if account.isSignedIn {
-                        Text(account.accountName ?? L10n.tr("you.signedIn"))
-                            .font(.system(size: 20, weight: .bold))
-                        Text("@" + (account.accountName ?? "you"))
-                            .font(.caption).foregroundColor(.secondary)
-                        // Always offer a way back into sign-in: a revoked
-                        // token can otherwise leave a dead "signed in" shell.
-                        Button { showSignIn = true } label: {
-                            Text(L10n.tr("you.switchAccount"))
-                                .font(.caption2).foregroundColor(.accentColor)
-                        }
-                    } else {
-                        Button { showSignIn = true } label: {
-                            HStack(spacing: 4) {
-                                Text(L10n.tr("signin.title"))
-                                    .font(.system(size: 20, weight: .bold))
-                                Image(systemName: "chevron.right").font(.caption)
-                            }.foregroundColor(.accentColor)
-                        }
-                        Text(L10n.tr("signin.desc"))
-                            .font(.caption2).foregroundColor(.secondary).lineLimit(2)
-                    }
-                }
-                Spacer()
-            }
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 16) {
                     Button { } label: { Text(L10n.tr("you.creator")) }
