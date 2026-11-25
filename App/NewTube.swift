@@ -668,8 +668,8 @@ struct LibraryView: View {
                         Image(systemName: "gearshape")
                     }
                 }
-                if videos.count > 1 {
-                    ToolbarItem(placement: .navigationBarLeading) {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    if videos.count > 1 {
                         Menu {
                             Button("Play all") { play(videos) }
                             Button("Shuffle") { play(videos.shuffled()) }
