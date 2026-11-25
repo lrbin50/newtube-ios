@@ -59,20 +59,26 @@ enum AccountError: LocalizedError {
     private let service = "com.newtube.oauth"
     private let account = "youtube"
     private let apiKey = "AIzaSyA8eiZmM1FaDVjRy-df2KTyQ_vz_yYM39w"
-    private let tvClientVersion = "7.20260311.12.00"
+    private let tvClientVersion = "7.20261123.19.00"
 
     init() {
         tokens = load()
         isSignedIn = tokens != nil
-        if tokens != nil { Task { await refreshProfile() } }
+        // Don't trust the local flag: verify the grant on launch. A stale
+        // token that YouTube has revoked still looks "signed in" locally,
+        // which leaves the avatar/playlists blank and the feed showing cache.
+        if tokens != nil { Task { await validateSession() } }
     }
 
     // MARK: - Profile (name + avatar)
 
-    /// Pulls the signed-in account's name and photo from the InnerTube
-    /// account menu — the same call native TV clients make. Failures are
-    /// silent: the header simply keeps the initial-letter placeholder.
-    func refreshProfile() async {
+    /// Verifies the stored token against YouTube before showing any account
+    /// UI. HTTP 401 means the grant was revoked (password change, device
+    /// revoked, or expired session) — we clear it so the app falls back to
+    /// the real sign-in page instead of a cache-backed fake "signed in" state.
+    /// Network errors are ignored so a transient failure never signs anyone
+    /// out by accident.
+    func validateSession() async {
         guard let token = try? await validToken() else { return }
         let body: [String: Any] = [
             "context": [
@@ -82,7 +88,9 @@ enum AccountError: LocalizedError {
                     "hl": "en", "gl": "US",
                     "platform": "TV",
                     "clientFormFactor": "UNKNOWN_FORM_FACTOR"
-                ]
+                ],
+                "user": ["enableSafetyMode": false, "lockedSafetyMode": false],
+                "request": ["useSsl": true, "internalExperimentFlags": []]
             ]
         ]
         guard let url = URL(string: "https://www.youtube.com/youtubei/v1/account/account_menu?key=\(apiKey)&prettyPrint=false")
@@ -90,27 +98,43 @@ enum AccountError: LocalizedError {
         do {
             let request = try makeInnertubeRequest(url: url, body: body, token: token)
             let (data, response) = try await LegacyNetwork.data(for: request)
-            guard (response as? HTTPURLResponse)?.statusCode == 200,
+            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            if status == 401 {
+                signOut()
+                return
+            }
+            guard status == 200,
                   let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
             else { return }
-
-            var name: String?
-            var photo: URL?
-            walkAccountInfo(json) { dict in
-                if name == nil {
-                    let candidate = Self.simpleText(dict["accountName"])
-                    if !candidate.isEmpty { name = candidate }
-                }
-                if photo == nil {
-                    photo = Self.largestThumbnail(dict["accountPhoto"])
-                }
-            }
-            accountName = name ?? accountName
-            avatarURL = photo ?? avatarURL
-            if let avatarURL { await loadAvatarImage(from: avatarURL) }
+            await applyProfile(json)
         } catch {
+            // Transient network failure: keep the session and try again later.
             return
         }
+    }
+
+    /// Pulls the signed-in account's name and photo from the InnerTube
+    /// account menu. A revoked token is detected here too so retrying from
+    /// the You tab can recover without a relaunch.
+    func refreshProfile() async {
+        await validateSession()
+    }
+
+    private func applyProfile(_ json: [String: Any]) async {
+        var name: String?
+        var photo: URL?
+        walkAccountInfo(json) { dict in
+            if name == nil {
+                let candidate = Self.simpleText(dict["accountName"])
+                if !candidate.isEmpty { name = candidate }
+            }
+            if photo == nil {
+                photo = Self.largestThumbnail(dict["accountPhoto"])
+            }
+        }
+        accountName = name ?? accountName
+        avatarURL = photo ?? avatarURL
+        if let avatarURL { await loadAvatarImage(from: avatarURL) }
     }
 
     /// Downloads the avatar and pre-crops it to a circle for tab-bar use.

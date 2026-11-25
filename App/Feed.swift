@@ -79,7 +79,7 @@ enum FeedError: LocalizedError {
     }()
     private let apiKey = "AIzaSyA8eiZmM1FaDVjRy-df2KTyQ_vz_yYM39w"
     private let tvAgent = "com.google.android.youtube/20.10.38 (Linux; U; Android 11) gzip"
-    private let tvClientVersion = "7.20260311.12.00"
+    private let tvClientVersion = "7.20261123.19.00"
 
     /// Display order matches the YouTube phone/tablet home chips. Titles are
     /// kept in English and localized by the view; `searchQuery` is the fallback

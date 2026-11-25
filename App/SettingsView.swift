@@ -4,6 +4,7 @@ struct SettingsView: View {
     @EnvironmentObject var library: Library
     @EnvironmentObject var playback: Playback
     @EnvironmentObject var tv: Television
+    @ObservedObject private var account = Account.shared
     @ObservedObject private var l10n = L10n.shared
     @AppStorage("sponsorBlock") private var skip = true
     @AppStorage("deArrow") private var titles = false
@@ -12,10 +13,28 @@ struct SettingsView: View {
     @State private var code = ""
     @State private var pairing = false
     @State private var confirmClear = false
+    @State private var confirmSignOut = false
+    @State private var showSignIn = false
 
     var body: some View {
         NavigationView {
             Form {
+                Section(header: Text(L10n.tr("settings.account"))) {
+                    if account.isSignedIn {
+                        HStack {
+                            Text(L10n.tr("settings.signedInAs"))
+                            Spacer()
+                            Text(account.accountName ?? L10n.tr("you.signedIn"))
+                                .foregroundColor(.secondary).lineLimit(1)
+                        }
+                        Button(L10n.tr("you.switchAccount")) { confirmSignOut = true }
+                            .foregroundColor(.accentColor)
+                        Button(L10n.tr("settings.signOut")) { confirmSignOut = true }
+                            .foregroundColor(.red)
+                    } else {
+                        Button(L10n.tr("signin.button")) { showSignIn = true }
+                    }
+                }
                 Section(header: Text(L10n.tr("settings.language"))) {
                     Picker(L10n.tr("settings.language"), selection: $l10n.language) {
                         ForEach(AppLanguage.allCases) { lang in
@@ -100,7 +119,21 @@ struct SettingsView: View {
                     ]
                 )
             }
+            .actionSheet(isPresented: $confirmSignOut) {
+                ActionSheet(
+                    title: Text(L10n.shared.effective == .simplifiedChinese
+                        ? "退出登录并重新授权？登录失效时请用此操作恢复。"
+                        : "Sign out and re-authorize? Use this if your sign-in has stopped working."),
+                    buttons: [
+                        .destructive(Text(L10n.tr("settings.signOut"))) {
+                            account.signOut()
+                        },
+                        .cancel()
+                    ]
+                )
+            }
         }
         .navigationViewStyle(StackNavigationViewStyle())
+        .sheet(isPresented: $showSignIn) { SignInSheet() }
     }
 }

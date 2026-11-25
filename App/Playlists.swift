@@ -24,7 +24,7 @@ struct YTPlaylist: Identifiable, Equatable {
     @Published private(set) var message: String?
 
     private let apiKey = "AIzaSyA8eiZmM1FaDVjRy-df2KTyQ_vz_yYM39w"
-    private let tvClientVersion = "7.20260311.12.00"
+    private let tvClientVersion = "7.20261123.19.00"
 
     func load(force: Bool = false) async {
         if !force && !playlists.isEmpty { return }
@@ -86,7 +86,14 @@ struct YTPlaylist: Identifiable, Equatable {
         request.setValue(tvClientVersion, forHTTPHeaderField: "X-YOUTUBE-CLIENT-VERSION")
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
         let (data, response) = try await LegacyNetwork.data(for: request)
-        guard (response as? HTTPURLResponse)?.statusCode == 200,
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        if status == 401 {
+            // Token revoked server-side: let Account clear the stale session
+            // so the UI returns to the real sign-in page.
+            await Account.shared.validateSession()
+            return nil
+        }
+        guard status == 200,
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         else { return nil }
         return json

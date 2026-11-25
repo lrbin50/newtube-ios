@@ -55,7 +55,7 @@ enum MoviesTab: String, CaseIterable, Identifiable {
     @Published private(set) var message: String?
 
     private let apiKey = "AIzaSyA8eiZmM1FaDVjRy-df2KTyQ_vz_yYM39w"
-    private let tvClientVersion = "7.20260311.12.00"
+    private let tvClientVersion = "7.20261123.19.00"
 
     func load(tab: MoviesTab, force: Bool = false) async {
         loading = true

@@ -946,6 +946,7 @@ struct LibraryView: View {
     @ObservedObject private var playlists = PlaylistsStore.shared
     @State private var showSettings = false
     @State private var showSearch = false
+    @State private var showSignIn = false
     @State private var searchText = ""
 
     enum Collection: String {
@@ -983,8 +984,14 @@ struct LibraryView: View {
             }
         }
         .navigationViewStyle(StackNavigationViewStyle())
-        .onAppear { Task { await playlists.load() } }
+        .onAppear {
+            Task {
+                await account.validateSession()
+                await playlists.load(force: true)
+            }
+        }
         .sheet(isPresented: $showSettings) { SettingsView().environmentObject(tv) }
+        .sheet(isPresented: $showSignIn) { SignInSheet() }
         .sheet(isPresented: $showSearch) {
             NavigationView {
                 VStack {
@@ -1039,12 +1046,27 @@ struct LibraryView: View {
                         )
                 }
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(account.accountName ?? L10n.tr("signin.title"))
-                        .font(.system(size: 20, weight: .bold))
-                    Text("@" + (account.accountName ?? "you"))
-                        .font(.caption).foregroundColor(.secondary)
-                    Button { } label: {
-                        Text(L10n.tr("you.viewChannel")).font(.caption2).foregroundColor(.secondary)
+                    if account.isSignedIn {
+                        Text(account.accountName ?? L10n.tr("you.signedIn"))
+                            .font(.system(size: 20, weight: .bold))
+                        Text("@" + (account.accountName ?? "you"))
+                            .font(.caption).foregroundColor(.secondary)
+                        // Always offer a way back into sign-in: a revoked
+                        // token can otherwise leave a dead "signed in" shell.
+                        Button { showSignIn = true } label: {
+                            Text(L10n.tr("you.switchAccount"))
+                                .font(.caption2).foregroundColor(.accentColor)
+                        }
+                    } else {
+                        Button { showSignIn = true } label: {
+                            HStack(spacing: 4) {
+                                Text(L10n.tr("signin.title"))
+                                    .font(.system(size: 20, weight: .bold))
+                                Image(systemName: "chevron.right").font(.caption)
+                            }.foregroundColor(.accentColor)
+                        }
+                        Text(L10n.tr("signin.desc"))
+                            .font(.caption2).foregroundColor(.secondary).lineLimit(2)
                     }
                 }
                 Spacer()
@@ -1076,6 +1098,25 @@ struct LibraryView: View {
             }.padding(.vertical, 24)
         } else if !library.saved.isEmpty {
             shelf(title: L10n.tr("you.watchLater"), videos: library.saved)
+        } else {
+            // No playlists and no cache: explain why and offer a way in
+            // instead of leaving an empty gap.
+            VStack(spacing: 8) {
+                Text(playlists.message ?? L10n.tr("you.playlists.empty"))
+                    .font(.caption).foregroundColor(.secondary)
+                    .multilineTextAlignment(.center)
+                Button {
+                    if account.isSignedIn {
+                        Task { await playlists.load(force: true) }
+                    } else {
+                        showSignIn = true
+                    }
+                } label: {
+                    Text(account.isSignedIn ? L10n.tr("common.retry") : L10n.tr("signin.button"))
+                        .font(.caption).foregroundColor(.accentColor)
+                }
+            }
+            .frame(maxWidth: .infinity).padding(.vertical, 20)
         }
     }
 
