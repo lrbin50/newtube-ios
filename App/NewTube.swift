@@ -287,9 +287,17 @@ struct BrowseView: View {
                     Label(L10n.tr("action.openYouTube"), systemImage: "safari")
                 }
             } label: {
-                Circle().fill(Color.accentColor.opacity(0.25))
-                    .overlay(Text("Y").font(.system(size: 14, weight: .bold)).foregroundColor(.accentColor))
-                    .frame(width: 30, height: 30)
+                Group {
+                    if let image = account.avatarImage {
+                        Image(uiImage: image).resizable().scaledToFill()
+                            .frame(width: 30, height: 30).clipShape(Circle())
+                    } else {
+                        Circle().fill(Color.accentColor.opacity(0.25))
+                            .overlay(Text("Y").font(.system(size: 14, weight: .bold))
+                                .foregroundColor(.accentColor))
+                            .frame(width: 30, height: 30)
+                    }
+                }
             }
         }
         .padding(.horizontal, 14).padding(.vertical, 10)

@@ -56,8 +56,8 @@ enum FeedError: LocalizedError {
     case badResponse
     var errorDescription: String? {
         switch self {
-        case .notSignedIn: return "Sign in to see your home feed"
-        case .badResponse: return "Couldn't load the feed"
+        case .notSignedIn: return L10n.tr("feed.notSignedIn")
+        case .badResponse: return L10n.tr("feed.failed")
         }
     }
 }

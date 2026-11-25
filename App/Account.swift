@@ -72,15 +72,53 @@ enum AccountError: LocalizedError {
 
     // MARK: - Profile (name + avatar)
 
-    /// Verifies the stored token against YouTube before showing any account
-    /// UI. HTTP 401 means the grant was revoked (password change, device
-    /// revoked, or expired session) — we clear it so the app falls back to
-    /// the real sign-in page instead of a cache-backed fake "signed in" state.
-    /// Network errors are ignored so a transient failure never signs anyone
-    /// out by accident.
+    /// Verifies the stored token and loads the real account profile.
+    ///
+    /// `account/account_menu` is retired: YouTube answers HTTP 400 to OAuth
+    /// bearer tokens on that endpoint. The signed-in channel id and avatar
+    /// are available from the playlist aggregation page instead, which uses
+    /// the same TV client context the token was issued for.
     func validateSession() async {
         guard let token = try? await validToken() else { return }
-        let body: [String: Any] = [
+        guard let url = URL(string: "https://www.youtube.com/youtubei/v1/browse?key=\(apiKey)&prettyPrint=false")
+        else { return }
+        do {
+            let request = try makeInnertubeRequest(url: url,
+                                                   body: tvBody(browseId: "FEplaylist_aggregation"),
+                                                   token: token)
+            let (data, response) = try await LegacyNetwork.data(for: request)
+            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            if status == 401 {
+                signOut()
+                return
+            }
+            guard status == 200,
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            else { return }
+
+            // Cheap fallback: every one of our own playlist tiles carries the
+            // account handle in its menu subtitle ("Private • @handle").
+            if accountName == nil, let handle = Self.accountHandle(in: json) {
+                accountName = handle
+            }
+            if let channelId = Self.signedInChannelId(in: json) {
+                await loadChannelProfile(channelId, token: token)
+            }
+        } catch {
+            // Transient network failure: keep the session and try again later.
+            return
+        }
+    }
+
+    /// Pulls the signed-in account's real name and photo from its channel
+    /// header. Called after sign-in and whenever the You tab appears, so a
+    /// previously empty profile recovers without reinstalling.
+    func refreshProfile() async {
+        await validateSession()
+    }
+
+    private func tvBody(browseId: String) -> [String: Any] {
+        [
             "context": [
                 "client": [
                     "clientName": "TVHTML5",
@@ -91,50 +129,82 @@ enum AccountError: LocalizedError {
                 ],
                 "user": ["enableSafetyMode": false, "lockedSafetyMode": false],
                 "request": ["useSsl": true, "internalExperimentFlags": []]
-            ]
+            ],
+            "browseId": browseId
         ]
-        guard let url = URL(string: "https://www.youtube.com/youtubei/v1/account/account_menu?key=\(apiKey)&prettyPrint=false")
-        else { return }
-        do {
-            let request = try makeInnertubeRequest(url: url, body: body, token: token)
-            let (data, response) = try await LegacyNetwork.data(for: request)
-            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
-            if status == 401 {
-                signOut()
+    }
+
+    /// The "Go to channel" item in our own playlists points at the signed-in
+    /// user's channel. Prefer that explicit item; otherwise take the most
+    /// frequently repeated UC id in the response.
+    private static func signedInChannelId(in value: Any) -> String? {
+        var counts: [String: Int] = [:]
+        var preferred: String?
+        walk(value) { dict in
+            if let item = dict["menuNavigationItemRenderer"] as? [String: Any],
+               !Self.simpleText(item["text"]).isEmpty,
+               Self.simpleText(item["text"]).lowercased().contains("channel"),
+               let endpoint = item["navigationEndpoint"] as? [String: Any],
+               let browse = endpoint["browseEndpoint"] as? [String: Any],
+               let id = browse["browseId"] as? String,
+               id.hasPrefix("UC"), id.count == 24 {
+                preferred = id
+            }
+            for child in dict.values {
+                guard let string = child as? String,
+                      string.hasPrefix("UC"), string.count == 24 else { continue }
+                counts[string, default: 0] += 1
+            }
+        }
+        return preferred ?? counts.max { $0.value < $1.value }?.key
+    }
+
+    private static func accountHandle(in value: Any) -> String? {
+        var result: String?
+        walk(value) { dict in
+            guard result == nil else { return }
+            for child in dict.values {
+                guard let string = child as? String, string.hasPrefix("@"),
+                      string.count > 1, string.count < 40 else { continue }
+                result = String(string.dropFirst())
                 return
             }
-            guard status == 200,
-                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        }
+        return result
+    }
+
+    private func loadChannelProfile(_ channelId: String, token: String) async {
+        guard let url = URL(string: "https://www.youtube.com/youtubei/v1/browse?key=\(apiKey)&prettyPrint=false")
+        else { return }
+        do {
+            let request = try makeInnertubeRequest(url: url,
+                                                   body: tvBody(browseId: channelId),
+                                                   token: token)
+            let (data, response) = try await LegacyNetwork.data(for: request)
+            if (response as? HTTPURLResponse)?.statusCode == 401 { signOut(); return }
+            guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
             else { return }
-            await applyProfile(json)
+            var name: String?
+            var photo: URL?
+            Self.walk(json) { dict in
+                guard let header = dict["channelHeaderRenderer"] as? [String: Any] else { return }
+                if name == nil {
+                    let candidate = Self.simpleText(header["title"])
+                    if !candidate.isEmpty { name = candidate }
+                }
+                if photo == nil { photo = Self.largestThumbnail(header["avatar"]) }
+            }
+            if let name, !name.isEmpty { accountName = name }
+            if let photo {
+                // The TV client serves a 72px avatar; ask for a larger crop.
+                let upgraded = URL(string: photo.absoluteString.replacingOccurrences(of: "=s72-", with: "=s200-"))
+                let chosen = upgraded ?? photo
+                avatarURL = chosen
+                await loadAvatarImage(from: chosen)
+            }
         } catch {
-            // Transient network failure: keep the session and try again later.
             return
         }
-    }
-
-    /// Pulls the signed-in account's name and photo from the InnerTube
-    /// account menu. A revoked token is detected here too so retrying from
-    /// the You tab can recover without a relaunch.
-    func refreshProfile() async {
-        await validateSession()
-    }
-
-    private func applyProfile(_ json: [String: Any]) async {
-        var name: String?
-        var photo: URL?
-        walkAccountInfo(json) { dict in
-            if name == nil {
-                let candidate = Self.simpleText(dict["accountName"])
-                if !candidate.isEmpty { name = candidate }
-            }
-            if photo == nil {
-                photo = Self.largestThumbnail(dict["accountPhoto"])
-            }
-        }
-        accountName = name ?? accountName
-        avatarURL = photo ?? avatarURL
-        if let avatarURL { await loadAvatarImage(from: avatarURL) }
     }
 
     /// Downloads the avatar and pre-crops it to a circle for tab-bar use.
@@ -152,18 +222,15 @@ enum AccountError: LocalizedError {
         avatarImage = cropped
     }
 
-    /// Deep-walks the account menu JSON for every account item shape
-    /// (accountItemRenderer and future variants).
-    private func walkAccountInfo(_ value: Any, into handler: @escaping ([String: Any]) -> Void) {
+    /// Structure-agnostic walk: YouTube moves account/channel data between
+    /// renderer shapes on every rollout, so every dictionary is offered to
+    /// the caller instead of matching one fixed path.
+    private static func walk(_ value: Any, into handler: @escaping ([String: Any]) -> Void) {
         if let dict = value as? [String: Any] {
-            if let item = dict["accountItemRenderer"] as? [String: Any] {
-                handler(item)
-            } else if dict["accountName"] != nil || dict["accountPhoto"] != nil {
-                handler(dict)
-            }
-            for child in dict.values { walkAccountInfo(child, into: handler) }
+            handler(dict)
+            for child in dict.values { walk(child, into: handler) }
         } else if let array = value as? [Any] {
-            for child in array { walkAccountInfo(child, into: handler) }
+            for child in array { walk(child, into: handler) }
         }
     }
 

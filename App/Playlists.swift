@@ -3,8 +3,8 @@ import Foundation
 // MARK: - Account playlists
 //
 // Fetches the signed-in user's playlists (Watch later, private playlists,
-// saved playlists) via InnerTube `browse`. `FEplaylists` is the dedicated
-// playlist page (requires a token); `FElibrary` is the fallback shelf source.
+// saved playlists) via InnerTube `browse`. `FEplaylist_aggregation` is the
+// live TV-client shelf (requires a token); `FElibrary` is the fallback source.
 // Parsing accepts both the new TVHTML5 `lockupViewModel` shape and the older
 // gridPlaylistRenderer / playlistRenderer shapes.
 
@@ -31,17 +31,21 @@ struct YTPlaylist: Identifiable, Equatable {
         loading = true
         defer { loading = false }
         guard let token = try? await Account.shared.validToken() else {
-            message = FeedError.notSignedIn.errorDescription
+            message = L10n.tr("you.playlists.empty")
             return
         }
         var found: [YTPlaylist] = []
-        for browseId in ["FEplaylists", "FElibrary"] {
-            let json = try? await browse(browseId: browseId, token: token)
-            found = Self.parse(json ?? [:])
+        // FEplaylists now returns HTTP 400 for OAuth bearer tokens. The TV
+        // client exposes the same shelf through FEplaylist_aggregation;
+        // FElibrary is retained as a fallback source.
+        for browseId in ["FEplaylist_aggregation", "FElibrary"] {
+            guard let json = try? await browse(browseId: browseId, token: token) else { continue }
+            found = Self.parseTV(json)
+            if found.isEmpty { found = Self.parse(json) }
             if !found.isEmpty { break }
         }
         if found.isEmpty {
-            message = FeedError.badResponse.errorDescription
+            message = L10n.tr("you.playlists.failed")
         }
         playlists = found
     }
@@ -116,6 +120,50 @@ struct YTPlaylist: Identifiable, Equatable {
     }
 
     // MARK: - Parsing
+
+    /// TVHTML5 serves the account playlist shelf as `tileRenderer` items
+    /// (contentType `TILE_CONTENT_TYPE_PLAYLIST`). The `VL…` browse id lives
+    /// in the select command, the title in tileMetadataRenderer and the
+    /// video count in a thumbnail overlay. Older clients used
+    /// lockupViewModel / gridPlaylistRenderer — `parse` below covers those.
+    static func parseTV(_ json: [String: Any]) -> [YTPlaylist] {
+        var found: [YTPlaylist] = []
+        var seen = Set<String>()
+        walk(json) { dict in
+            guard let tile = dict["tileRenderer"] as? [String: Any] else { return }
+            let type = tile["contentType"] as? String ?? ""
+            guard type.contains("PLAYLIST") else { return }
+            let command = tile["onSelectCommand"] as? [String: Any]
+            let endpoint = command?["browseEndpoint"] as? [String: Any]
+            var id = endpoint?["browseId"] as? String ?? ""
+            if id.isEmpty {
+                let raw = tile["contentId"] as? String ?? ""
+                id = raw.hasPrefix("VL") ? raw : "VL" + raw
+            }
+            guard id.hasPrefix("VL"), seen.insert(id).inserted else { return }
+            let meta = (tile["metadata"] as? [String: Any])?["tileMetadataRenderer"] as? [String: Any]
+            let title = text(meta?["title"])
+            guard !title.isEmpty else { return }
+            let header = (tile["header"] as? [String: Any])?["tileHeaderRenderer"] as? [String: Any]
+            found.append(YTPlaylist(id: id, title: title,
+                                    thumbnail: firstThumbnail(in: header ?? tile),
+                                    count: videoCount(in: tile)))
+        }
+        return found
+    }
+
+    private static func videoCount(in value: Any) -> Int? {
+        var result: Int?
+        walk(value) { dict in
+            guard result == nil,
+                  let overlay = dict["thumbnailOverlayTimeStatusRenderer"] as? [String: Any]
+            else { return }
+            let label = text(overlay["text"])
+            guard let count = Int(label.filter("0123456789".contains)), count > 0 else { return }
+            result = count
+        }
+        return result
+    }
 
     static func parse(_ json: [String: Any]) -> [YTPlaylist] {
         var found: [YTPlaylist] = []
