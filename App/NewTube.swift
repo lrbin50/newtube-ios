@@ -51,7 +51,7 @@ struct RootView: View {
         // Reload the shared feed when switching between Home and Subscriptions.
         .onChange(of: selection) { index in
             if index == 0 { Task { await Feed.shared.load(.home) } }
-            if index == 2 { Task { await Feed.shared.load(.subscriptions) } }
+            if index == 2 { Task { await SubscriptionsStore.shared.load() } }
         }
         .onReceive(NotificationCenter.default.publisher(for: .switchToHomeTab)) { _ in
             selection = 0
@@ -82,7 +82,7 @@ struct RootView: View {
     }
 
     private var subsTab: some View {
-        BrowseView()
+        SubscriptionsView()
             .tabItem { Label(L10n.tr("tab.subscriptions"), systemImage: "rectangle.stack") }.tag(2)
     }
 
