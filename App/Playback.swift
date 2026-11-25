@@ -24,6 +24,11 @@ import SwiftUI
     private var observer: NSKeyValueObservation?
     private var stateObserver: NSKeyValueObservation?
     private var ended: NSObjectProtocol?
+    /// First-frame instrumentation: set when a video is opened, cleared once
+    /// AVPlayerItem reports .readyToPlay (or the open fails).
+    private var openStartedAt: Date?
+    /// Restores normal buffering a moment after the first frame is up.
+    private var bufferTask: Task<Void, Never>?
     private var tick: Any?
     private var lastCheckpoint = -1
     private let defaults = UserDefaults.standard
@@ -80,6 +85,7 @@ import SwiftUI
         current = video
         expanded = true
         resolving = true
+        openStartedAt = Date()
         lookup = Task {
             do {
                 let url: URL
@@ -89,20 +95,35 @@ import SwiftUI
                 try AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback)
                 try AVAudioSession.sharedInstance().setActive(true)
                 let item = AVPlayerItem(url: url)
-                observe(item, video: video)
+                // First-frame tuning: buffer only what is needed to paint the
+                // first frame and cap the peak rate briefly so a DASH fallback
+                // does not start at its top variant. The main itag18 path is
+                // already 360p progressive, so the cap is a no-op there.
+                item.preferredForwardBufferDuration = 0.5
+                item.preferredPeakBitRate = 1_000_000
                 player.replaceCurrentItem(with: item)
+                observe(item, video: video)
                 let seconds = library.resumeTime(video)
                 if seconds > 0 { seek(seconds) }
                 library.played(video)
                 refreshNowPlaying()
                 resume()
-                resolving = false
-                // Extra community lookups wait until playback has started so
-                // they never compete with stream resolution for bandwidth.
-                if !Task.isCancelled { refreshCommunity() }
+                // Restore normal buffering shortly after the first frame so
+                // long-form playback stays smooth past the first few seconds.
+                bufferTask?.cancel()
+                bufferTask = Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: 800_000_000)
+                    guard !Task.isCancelled, self.player.currentItem === item else { return }
+                    item.preferredForwardBufferDuration = 0
+                    item.preferredPeakBitRate = 0
+                }
+                // `resolving` is deliberately NOT cleared here. observe()
+                // clears it only on .readyToPlay, so the loading overlay can
+                // never "finish" before a real frame has been buffered.
             } catch {
                 guard !Task.isCancelled else { return }
                 resolving = false
+                logStart(video, failed: true)
                 failure = error.localizedDescription
             }
         }
@@ -139,10 +160,25 @@ import SwiftUI
     }
 
     private func observe(_ item: AVPlayerItem, video: Video) {
-        observer = item.observe(\.status, options: [.new]) { [weak self] item, _ in
+        observer = item.observe(\.status, options: [.initial, .new]) { [weak self] item, _ in
             Task { @MainActor in
                 guard let self, self.player.currentItem === item else { return }
-                if item.status == .failed { self.failure = item.error?.localizedDescription ?? "Playback failed." }
+                switch item.status {
+                case .readyToPlay:
+                    let wasResolving = self.resolving
+                    self.resolving = false
+                    guard wasResolving else { return }
+                    self.logStart(video)
+                    // Community lookups wait for the first frame instead of
+                    // competing with stream resolution for bandwidth.
+                    self.refreshCommunity()
+                case .failed:
+                    self.resolving = false
+                    self.logStart(video, failed: true)
+                    self.failure = item.error?.localizedDescription ?? "Playback failed."
+                default:
+                    break
+                }
             }
         }
         ended = NotificationCenter.default.addObserver(forName: .AVPlayerItemDidPlayToEndTime, object: item, queue: .main) { [weak self] _ in
@@ -152,6 +188,19 @@ import SwiftUI
                 else { self.next() }
                 self.library.mark(video, seconds: 0)
             }
+        }
+    }
+
+    /// Lightweight first-frame instrumentation. Only slow starts are printed,
+    /// so the console tag `[Perf]` stays quiet on a fast connection and gives
+    /// us real numbers before investing in a bigger prewarm queue.
+    private func logStart(_ video: Video, failed: Bool = false) {
+        guard let started = openStartedAt else { return }
+        openStartedAt = nil
+        let elapsed = Date().timeIntervalSince(started)
+        if failed || elapsed >= 4 {
+            print(String(format: "[Perf] video %@ %@ in %.2fs",
+                         video.id, failed ? "FAILED" : "first-frame", elapsed))
         }
     }
 
@@ -201,6 +250,9 @@ import SwiftUI
     func close() {
         lookup?.cancel()
         extras?.cancel()
+        bufferTask?.cancel()
+        bufferTask = nil
+        openStartedAt = nil
         if let ended { NotificationCenter.default.removeObserver(ended) }
         ended = nil
         observer = nil

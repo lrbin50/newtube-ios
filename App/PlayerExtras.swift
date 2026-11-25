@@ -5,17 +5,28 @@ import SwiftUI
 // Shared pieces for the player page: the resolving overlay, the bottom-right
 // mini window, and the "save to playlist" chooser.
 
-/// Animated loading overlay shown over the video area while the stream is
-/// being resolved — a red spinner plus a label instead of a bare system dot.
+/// Loading overlay shown over the video area while the stream resolves AND
+/// buffers. The feed card has usually already cached the thumbnail, so showing
+/// it here removes the "black rectangle + spinner" feeling of a stalled player.
 struct ResolvingOverlay: View {
+    var thumbnail: URL? = nil
+
     var body: some View {
         ZStack {
-            Color.black.opacity(0.55)
+            if let thumbnail {
+                RemoteThumbnail(url: thumbnail)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .clipped()
+                Color.black.opacity(0.32)
+            } else {
+                Color.black.opacity(0.55)
+            }
             VStack(spacing: 12) {
                 Spinner(size: 46)
                 Text(L10n.tr("player.loading", fallback: "Loading…"))
                     .font(.footnote.weight(.medium))
                     .foregroundColor(.white)
+                    .shadow(radius: 1)
             }
         }
     }

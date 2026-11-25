@@ -517,7 +517,7 @@ struct FullScreenPlayerView: View {
                     ZStack {
                         PlayerSurface(player: playback.player)
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        if playback.resolving { ResolvingOverlay() }
+                        if playback.resolving { ResolvingOverlay(thumbnail: video.thumbnailURL) }
                         playerControls
                     }
                 } else {
@@ -527,7 +527,7 @@ struct FullScreenPlayerView: View {
                             ZStack {
                                 PlayerSurface(player: playback.player)
                                     .frame(height: geo.size.width * 9 / 16)
-                                if playback.resolving { ResolvingOverlay() }
+                                if playback.resolving { ResolvingOverlay(thumbnail: video.thumbnailURL) }
                                 playerControls
                             }
                             detail
