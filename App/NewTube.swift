@@ -907,7 +907,11 @@ struct LibraryView: View {
                             await Feed.shared.load(.search(query))
                             NotificationCenter.default.post(name: .switchToHomeTab, object: nil)
                         }
-                    }.buttonStyle(.bordered)
+                    }
+                    .padding(.horizontal, 20).padding(.vertical, 10)
+                    .background(Color.blue)
+                    .foregroundColor(.white)
+                    .cornerRadius(8)
                     Spacer()
                 }
                 .navigationTitle(L10n.tr("action.search"))
