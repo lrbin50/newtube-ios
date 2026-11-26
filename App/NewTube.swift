@@ -54,16 +54,23 @@ struct RootView: View {
         .overlay(miniPlayerOverlay)
         .onAppear {
             browser.play = { playback.open($0) }
+            applyYouTabAvatar()
         }
+        // The avatar downloads asynchronously after sign-in; re-apply the tab
+        // icon whenever it (or the sign-in state) changes.
+        .onReceive(account.$avatarImage) { _ in applyYouTabAvatar() }
+        .onReceive(account.$isSignedIn) { _ in applyYouTabAvatar() }
         // Reload the shared feed when switching between Home and Subscriptions.
         // If Shorts is turned off while it is the active tab, fall back to
         // Home so no empty tab stays selected (Shorts carries tag 1).
         .onChange(of: showShorts) { showing in
             if !showing && selection == 1 { selection = 0 }
+            applyYouTabAvatar()
         }
         .onChange(of: selection) { index in
             if index == 0 { Task { await Feed.shared.load(.home) } }
             if index == 2 { Task { await SubscriptionsStore.shared.load() } }
+            applyYouTabAvatar()
         }
         .onReceive(NotificationCenter.default.publisher(for: .switchToHomeTab)) { _ in
             selection = 0
@@ -105,16 +112,54 @@ struct RootView: View {
 
     @ViewBuilder
     private var youTabContent: some View {
-        // iOS 14's UITabBar renders tab images as *templates* at the bitmap's
-        // intrinsic pixel size. A real avatar UIImage (200px, already cropped
-        // to a circle) therefore overflows the tab bar and is painted as a
-        // huge solid circle — blue when selected, translucent grey otherwise —
-        // which shows up as the large half-circle in the bottom-right corner
-        // on every tab. SwiftUI .frame/.clipShape cannot override UITabBarItem.
-        // A system symbol is template-rendered correctly; the full photo is
-        // shown at 54pt in the You tab's title bar instead.
+        // Base symbol; when signed in, applyYouTabAvatar() replaces the tab
+        // item's image with the real photo at the same 22pt icon size.
         Image(systemName: account.isSignedIn ? "person.crop.circle.fill" : "person.crop.circle")
         Text(L10n.tr("tab.you"))
+    }
+
+    /// Replace the You tab's icon with the signed-in user's real avatar.
+    ///
+    /// iOS 14's UITabBar renders tab images as templates at the bitmap's
+    /// intrinsic pixel size, so the raw 200px avatar becomes a huge solid
+    /// circle. Pre-scaling to a 22pt icon and forcing `.alwaysOriginal`
+    /// sidesteps that; the size matches the system symbol it replaces.
+    /// Signed-out users keep the system person symbol untouched.
+    private func applyYouTabAvatar() {
+        DispatchQueue.main.async {
+            guard let scene = UIApplication.shared.connectedScenes
+                    .first(where: { $0.activationState == .foregroundActive }) as? UIWindowScene,
+                  let root = scene.windows.first(where: { $0.isKeyWindow })?.rootViewController
+                    ?? scene.windows.first?.rootViewController,
+                  let tabBar = Self.findTabBar(in: root),
+                  let items = tabBar.items, !items.isEmpty
+            else { return }
+            // "我" is the final tab (Shorts, when enabled, sits before it).
+            let index = items.count - 1
+            if account.isSignedIn, let photo = account.avatarImage {
+                let side: CGFloat = 22
+                let icon = UIGraphicsImageRenderer(size: CGSize(width: side, height: side)).image { _ in
+                    photo.draw(in: CGRect(x: 0, y: 0, width: side, height: side))
+                }.withRenderingMode(.alwaysOriginal)
+                items[index].image = icon
+                items[index].selectedImage = icon
+            } else {
+                // Signed out: restore the template symbol so it tints correctly.
+                items[index].image = UIImage(systemName: "person.crop.circle")
+                items[index].selectedImage = UIImage(systemName: "person.crop.circle.fill")
+            }
+        }
+    }
+
+    private static func findTabBar(in vc: UIViewController) -> UITabBar? {
+        if let tab = vc as? UITabBarController { return tab.tabBar }
+        for child in vc.children {
+            if let bar = findTabBar(in: child) { return bar }
+        }
+        if let presented = vc.presentedViewController, let bar = findTabBar(in: presented) {
+            return bar
+        }
+        return nil
     }
 
     /// Floating bottom-right mini window while the player is minimized;
@@ -302,24 +347,8 @@ struct BrowseView: View {
             Button { showSearch = true } label: {
                 Image(systemName: "magnifyingglass").font(.system(size: 20)).foregroundColor(.primary)
             }
-            Menu {
-                Button { showSignIn = true } label: { Label(L10n.tr("action.account"), systemImage: "person.circle") }
-                Button { UIApplication.shared.open(URL(string: "https://www.youtube.com/feed/you")!) } label: {
-                    Label(L10n.tr("action.openYouTube"), systemImage: "safari")
-                }
-            } label: {
-                Group {
-                    if let image = account.avatarImage {
-                        Image(uiImage: image).resizable().scaledToFill()
-                            .frame(width: 30, height: 30).clipShape(Circle())
-                    } else {
-                        Circle().fill(Color.accentColor.opacity(0.25))
-                            .overlay(Text("Y").font(.system(size: 14, weight: .bold))
-                                .foregroundColor(.accentColor))
-                            .frame(width: 30, height: 30)
-                    }
-                }
-            }
+            // The top-right account avatar was removed. Account actions live
+            // in the You tab header; keep this bar to logo + search only.
         }
         .padding(.horizontal, 14).padding(.vertical, 10)
     }
@@ -1108,7 +1137,9 @@ struct LibraryView: View {
         NavigationView {
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
-                    accountHeader
+                    // The grey account-switcher strip (Creator / Google Account /
+                    // Incognito / Share settings) was removed; the avatar and
+                    // account actions remain in the navigation bar above.
                     if !library.history.isEmpty {
                         shelf(title: L10n.tr("you.history"), videos: library.history)
                     }
@@ -1252,21 +1283,6 @@ struct LibraryView: View {
         }
     }
 
-    private var accountHeader: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 16) {
-                    Button { } label: { Text(L10n.tr("you.creator")) }
-                    Button { } label: { Text(L10n.tr("you.googleAccount")) }
-                    Button { } label: { Text(L10n.tr("you.incognito")) }
-                    Button { showSettings = true } label: { Text(L10n.tr("you.shareSettings")) }
-                }
-                .font(.caption2).foregroundColor(.secondary)
-            }
-        }
-        .padding(.horizontal, 16).padding(.vertical, 14)
-    }
-
     /// Real account playlists from InnerTube; falls back to the local
     /// watch-later list while loading or when signed out.
     @ViewBuilder
@@ -1306,70 +1322,78 @@ struct LibraryView: View {
     private var playlistsShelf: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(L10n.tr("you.playlists")).font(.headline).padding(.horizontal, 16)
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 12) {
-                    ForEach(playlists.playlists.prefix(20)) { playlist in
-                        NavigationLink(destination: PlaylistDetailView(playlist: playlist)) {
-                            VStack(alignment: .leading, spacing: 6) {
-                                ZStack(alignment: .bottomTrailing) {
-                                    Group {
-                                        if let url = playlist.thumbnail {
-                                            RemoteThumbnail(url: url)
-                                        } else {
-                                            Rectangle().fill(Color.secondary.opacity(0.15))
-                                                .overlay(Image(systemName: "list.bullet.rectangle")
-                                                    .font(.system(size: 28)).foregroundColor(.secondary))
-                                        }
-                                    }
-                                    .frame(width: 190, height: 107).clipped().cornerRadius(8)
-                                    if let count = playlist.count {
-                                        HStack(spacing: 3) {
-                                            Image(systemName: "line.3.horizontal")
-                                                .font(.system(size: 10, weight: .bold))
-                                            Text("\(count)").font(.system(size: 11, weight: .semibold))
-                                        }
-                                        .foregroundColor(.white)
-                                        .padding(.horizontal, 6).padding(.vertical, 2)
-                                        .background(Color.black.opacity(0.8)).cornerRadius(4)
-                                        .padding(6)
+            LazyVGrid(columns: gridColumns, spacing: 14) {
+                ForEach(playlists.playlists.prefix(18)) { playlist in
+                    NavigationLink(destination: PlaylistDetailView(playlist: playlist)) {
+                        VStack(alignment: .leading, spacing: 6) {
+                            ZStack(alignment: .bottomTrailing) {
+                                Group {
+                                    if let url = playlist.thumbnail {
+                                        RemoteThumbnail(url: url)
+                                    } else {
+                                        Rectangle().fill(Color.secondary.opacity(0.15))
+                                            .overlay(Image(systemName: "list.bullet.rectangle")
+                                                .font(.system(size: 28)).foregroundColor(.secondary))
                                     }
                                 }
-                                Text(playlist.title)
-                                    .font(.caption).foregroundColor(.primary)
-                                    .lineLimit(2).multilineTextAlignment(.leading)
-                                Text(L10n.tr("you.private.playlist"))
-                                    .font(.caption2).foregroundColor(.secondary)
+                                .frame(maxWidth: .infinity)
+                                .aspectRatio(16 / 9, contentMode: .fit)
+                                .clipped().cornerRadius(8)
+                                if let count = playlist.count {
+                                    HStack(spacing: 3) {
+                                        Image(systemName: "line.3.horizontal")
+                                            .font(.system(size: 10, weight: .bold))
+                                        Text("\(count)").font(.system(size: 11, weight: .semibold))
+                                    }
+                                    .foregroundColor(.white)
+                                    .padding(.horizontal, 6).padding(.vertical, 2)
+                                    .background(Color.black.opacity(0.8)).cornerRadius(4)
+                                    .padding(6)
+                                }
                             }
-                            .frame(width: 190, alignment: .leading)
+                            Text(playlist.title)
+                                .font(.caption).foregroundColor(.primary)
+                                .lineLimit(2).multilineTextAlignment(.leading)
+                            Text(L10n.tr("you.private.playlist"))
+                                .font(.caption2).foregroundColor(.secondary)
                         }
-                        .buttonStyle(.plain)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                     }
-                }.padding(.horizontal, 16)
+                    .buttonStyle(.plain)
+                }
             }
+            .padding(.horizontal, 16)
         }.padding(.bottom, 14)
     }
 
+    /// History shelf as a three-column grid so cards are large enough to read
+    /// while showing roughly three videos per row (like the home feed).
     private func shelf(title: String, videos: [Video]) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(title).font(.headline).padding(.horizontal, 16)
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 12) {
-                    ForEach(videos.prefix(16)) { video in
-                        Button { playback.open(video) } label: {
-                            VStack(alignment: .leading, spacing: 6) {
-                                RemoteThumbnail(url: video.thumbnailURL)
-                                    .frame(width: 190, height: 107).clipped().cornerRadius(8)
-                                Text(video.title)
-                                    .font(.caption).foregroundColor(.primary)
-                                    .lineLimit(2).multilineTextAlignment(.leading)
-                            }
-                            .frame(width: 190, alignment: .leading)
+            LazyVGrid(columns: gridColumns, spacing: 14) {
+                ForEach(videos.prefix(12)) { video in
+                    Button { playback.open(video) } label: {
+                        VStack(alignment: .leading, spacing: 6) {
+                            RemoteThumbnail(url: video.thumbnailURL)
+                                .frame(maxWidth: .infinity)
+                                .aspectRatio(16 / 9, contentMode: .fit)
+                                .clipped().cornerRadius(8)
+                            Text(video.title)
+                                .font(.caption).foregroundColor(.primary)
+                                .lineLimit(2).multilineTextAlignment(.leading)
                         }
-                        .buttonStyle(.plain)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                     }
-                }.padding(.horizontal, 16)
+                    .buttonStyle(.plain)
+                }
             }
+            .padding(.horizontal, 16)
         }.padding(.bottom, 14)
+    }
+
+    private var gridColumns: [GridItem] {
+        Array(repeating: GridItem(.flexible(), spacing: 12), count: 3)
     }
 
     private func row(icon: String, title: String, kind: Collection) -> some View {
