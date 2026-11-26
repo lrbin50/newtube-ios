@@ -425,7 +425,7 @@ struct FeedCard: View {
                 RemoteThumbnail(url: video.thumbnailURL)
                     .frame(maxWidth: .infinity)
                     .aspectRatio(16 / 9, contentMode: .fit)
-                    .clipped().cornerRadius(8)
+                    .clipped().cornerRadius(14)
                 if let duration = video.duration {
                     Text(duration).font(.system(size: 11, weight: .semibold)).foregroundColor(.white)
                         .padding(.horizontal, 5).padding(.vertical, 2)
