@@ -19,39 +19,75 @@ struct CommentItem: Identifiable {
     var isCreator: Bool
 }
 
-/// Rough age in seconds parsed from YouTube's relative timestamps (both the
-/// English client strings like "7y ago (edited)" and the Chinese ones like
-/// "6天前"). Used only to order the locally loaded page under 最新; unknown
-/// formats sort last instead of jumping to the top.
-enum CommentTime {
-    static func ageSeconds(_ raw: String) -> Double {
-        let text = raw.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
-        if text.isEmpty { return Double.greatestFiniteMagnitude }
-        if text.contains("just now") || text.contains("刚刚") || text.contains("今天") { return 0 }
-        if text.contains("昨天") || text.contains("yesterday") { return 86_400 }
-        // "(edited)" is decoration; strip it before looking for number + unit.
-        let clean = text.replacingOccurrences(of: "(edited)", with: "")
-                        .replacingOccurrences(of: "（已编辑）", with: "")
-        var amount = 1.0
-        if let match = clean.range(of: "[0-9]+(?:\\.[0-9]+)?", options: .regularExpression),
-           let value = Double(String(clean[match])) {
-            amount = value
+/// Builds the protobuf continuation token that asks YouTube's `next`
+/// endpoint for a comment section sorted a specific way. Ported from the
+/// reference client's `buildCommentsContinuation`; the token format is
+/// client-agnostic (the live ANDROID reload token decodes to the same
+/// video-id-in-field-2 shape), so sorting server-side avoids the unreliable
+/// local "relative time" guess. `sortBy`: 0 = top, 1 = newest.
+enum CommentContinuation {
+    static func token(videoId: String, sortBy: Int, commentId: String? = nil) -> String {
+        let ctx = message([protoString(field: 2, value: videoId)])
+        let idField = commentId.flatMap { protoString(field: 16, value: $0) }
+        let opts = message([
+            protoString(field: 4, value: videoId),
+            protoInt32(field: 6, value: sortBy),
+            protoInt32(field: 15, value: 2),
+            idField
+        ].compactMap { $0 })
+        let params = message([
+            message(field: 4, value: opts),
+            protoString(field: 8, value: "comments-section")
+        ])
+        let root = message([
+            message(field: 2, value: ctx),
+            protoInt32(field: 3, value: 6),
+            message(field: 6, value: params)
+        ])
+        let url = root.base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+        let allowed = CharacterSet(charactersIn:
+            "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_.!~*'()")
+        return url.addingPercentEncoding(withAllowedCharacters: allowed) ?? url
+    }
+
+    private static func message(_ fields: [Data]) -> Data {
+        fields.reduce(into: Data()) { $0.append($1) }
+    }
+
+    private static func message(field: Int, value: Data) -> Data {
+        var data = Data()
+        data.append(key(field: field, wireType: 2))
+        data.append(varint(value.count))
+        data.append(value)
+        return data
+    }
+
+    private static func protoString(field: Int, value: String) -> Data {
+        message(field: field, value: Data(value.utf8))
+    }
+
+    private static func protoInt32(field: Int, value: Int) -> Data {
+        var data = Data()
+        data.append(key(field: field, wireType: 0))
+        data.append(varint(value))
+        return data
+    }
+
+    private static func key(field: Int, wireType: Int) -> Data {
+        varint((field << 3) | wireType)
+    }
+
+    private static func varint(_ value: Int) -> Data {
+        var data = Data()
+        var current = UInt64(bitPattern: Int64(value))
+        while current >= 0x80 {
+            data.append(UInt8(current & 0x7F | 0x80))
+            current >>= 7
         }
-        // Longest tokens first so "month" wins over "m", "minutes" over "min".
-        let units: [(String, Double)] = [
-            ("year", 365 * 86_400), ("years", 365 * 86_400), ("年", 365 * 86_400),
-            ("month", 30 * 86_400), ("months", 30 * 86_400), ("个月", 30 * 86_400), ("mo", 30 * 86_400),
-            ("week", 7 * 86_400), ("weeks", 7 * 86_400), ("星期", 7 * 86_400), ("周", 7 * 86_400),
-            ("day", 86_400), ("days", 86_400), ("天", 86_400), ("昨日", 86_400),
-            ("hour", 3_600), ("hours", 3_600), ("小时", 3_600), ("hr", 3_600),
-            ("minute", 60), ("minutes", 60), ("分钟", 60), ("min", 60),
-            ("second", 1), ("seconds", 1), ("秒", 1),
-            ("y", 365 * 86_400), ("w", 7 * 86_400), ("d", 86_400), ("h", 3_600), ("m", 60), ("s", 1)
-        ]
-        for (token, multiplier) in units where clean.contains(token) {
-            return amount * multiplier
-        }
-        return Double.greatestFiniteMagnitude
+        data.append(UInt8(current))
+        return data
     }
 }
 
@@ -70,11 +106,17 @@ final class CommentsStore: ObservableObject {
     /// Whether another page of comments can be requested.
     var nextPageAvailable: Bool { nextPage != nil }
 
+    /// 0 = 最热门, 1 = 最新. Exposed read-only for the sort tabs.
+    var currentSort: Int { sortBy }
+
     private var videoId: String?
     private var nextPage: String?
     private var createParams: String?
     private var visitorData: String?
     private var requestSequence = 0
+    /// Server-side sort: 0 = top (热门), 1 = newest (最新). Sorting is done
+    /// by YouTube via the continuation token, not by parsing relative times.
+    private var sortBy = 0
 
     /// The video whose comments are currently shown. The panel's `onAppear`
     /// uses this to avoid reloading (and flashing a spinner) every time the
@@ -97,35 +139,38 @@ final class CommentsStore: ObservableObject {
         requestSequence = sequence
         defer { if requestSequence == sequence { loading = false } }
 
-        // Step 1: the video's `next` response embeds a reload token for the
-        // comment section panel.
-        guard let first = try? await post("next", body: [
+        // Step 1: the `next` response carries the composer params, visitorData
+        // and (as a fallback) the section's own reload token.
+        let first = try? await post("next", body: [
             "context": clientContext,
             "videoId": videoId
-        ]) else {
-            if requestSequence == sequence { error = L10n.tr("comments.failed", fallback: "Couldn't load comments") }
-            return
-        }
-        // The comment endpoint validates the poster's session against the
-        // visitorData that produced createCommentParams, so keep it with the
-        // params instead of generating a fresh (mismatched) one at post time.
-        if let context = first["responseContext"] as? [String: Any],
+        ])
+        if let context = first?["responseContext"] as? [String: Any],
            let visitor = context["visitorData"] as? String {
             visitorData = visitor
         }
-        // The composer's createCommentParams sometimes live in the first
-        // `next` response rather than the paginated comment page. Capture
-        // them here too so posting never fails just because the params were
-        // on a different response.
-        if let params = Self.createParams(in: first) { createParams = params }
-        guard let token = Self.sectionToken(in: first) else {
-            // Some videos have comments disabled; treat an empty section as done.
-            if requestSequence == sequence && comments.isEmpty {
-                error = nil
-            }
-            return
+        if let params = first.flatMap({ Self.createParams(in: $0) }) { createParams = params }
+        let fallbackToken = first.flatMap { Self.sectionToken(in: $0) }
+
+        // Ask YouTube for a server-sorted section via the protobuf token.
+        // If the client rejects that token (empty result), fall back to the
+        // section's own reload token so "Top" always loads — that path was
+        // verified working before sorting was added.
+        let sortedToken = CommentContinuation.token(videoId: videoId, sortBy: sortBy)
+        if !(await fetchPage(token: sortedToken, sequence: sequence)),
+           let fallbackToken, requestSequence == sequence {
+            comments = []
+            error = nil
+            await fetchPage(token: fallbackToken, sequence: sequence)
         }
-        await fetchPage(token: token, sequence: sequence)
+    }
+
+    /// Switch between Top / Newest. Rebuilds the protobuf continuation with
+    /// the requested sort so YouTube returns a freshly ranked first page.
+    func setSort(_ newSort: Int) async {
+        guard let id = videoId, (newSort == 0 || newSort == 1), newSort != sortBy else { return }
+        sortBy = newSort
+        await load(videoId: id)
     }
 
     func loadMore() async {
@@ -234,7 +279,11 @@ final class CommentsStore: ObservableObject {
         return ctx
     }
 
-    private func fetchPage(token: String, sequence: Int) async {
+    /// - Returns: true when this page actually produced comments. The load
+    /// path uses this to fall back to the section reload token if the
+    /// protobuf sort token is rejected by the client.
+    @discardableResult
+    private func fetchPage(token: String, sequence: Int) async -> Bool {
         guard let json = try? await post("next", body: [
             "context": clientContext,
             "continuation": token
@@ -242,7 +291,7 @@ final class CommentsStore: ObservableObject {
             if requestSequence == sequence && comments.isEmpty {
                 error = L10n.tr("comments.failed", fallback: "Couldn't load comments")
             }
-            return
+            return false
         }
         let page = Self.parse(json)
         let next = Self.nextToken(in: json)
@@ -253,7 +302,7 @@ final class CommentsStore: ObservableObject {
            let visitor = context["visitorData"] as? String {
             visitorData = visitor
         }
-        guard requestSequence == sequence else { return }
+        guard requestSequence == sequence else { return false }
         // Comments arrive as entity payloads in display order; drop duplicates
         // when refreshing after posting.
         var seen = Set(comments.map { $0.id })
@@ -263,6 +312,7 @@ final class CommentsStore: ObservableObject {
         }
         nextPage = next
         if let params = params { createParams = params }
+        return !page.isEmpty
     }
 
     /// Anonymous InnerTube read. Never attach the OAuth token here — the
@@ -277,11 +327,20 @@ final class CommentsStore: ObservableObject {
 
     /// Fetch a fresh signed-in composer payload so createCommentParams and
     /// visitorData belong to the same authenticated session as the bearer.
+    /// The `next` read must carry the Bearer here (unlike the anonymous
+    /// comment listing): without it YouTube issues anonymous composer params,
+    /// which the server then rejects against the posting token (403).
     private func signedComposer(token: String) async -> (params: String, visitor: String?)? {
-        guard let json = try? await post("next", body: [
-            "context": signedContext(token: token), "videoId": videoId ?? ""
-        ]) else { return nil }
-        guard let params = Self.createParams(in: json) else { return nil }
+        let result = try? await LegacyNetwork.data(for: makeRequest(
+            endpoint: "next",
+            body: ["context": signedContext(token: token), "videoId": videoId ?? ""],
+            authorization: token
+        ))
+        guard let data = result?.0,
+              (result?.1 as? HTTPURLResponse)?.statusCode == 200,
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let params = Self.createParams(in: json)
+        else { return nil }
         let visitor = (json["responseContext"] as? [String: Any])?["visitorData"] as? String
         return (params, visitor)
     }

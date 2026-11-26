@@ -494,6 +494,14 @@ enum FeedError: LocalizedError {
     /// hard-coding them: YouTube changes these server-side on every rollout.
     /// Only titles we actually display are accepted, which keeps unrelated
     /// navigation items (sidebar, footer) out of the chip bar.
+    ///
+    /// NOTE (data source): live `FEwhat_to_watch` samples from both TVHTML5
+    /// and WEB clients carry NO chip renderer at all — YouTube has moved the
+    /// category bar out of this response. When no params are found here,
+    /// `defaultChips` (public-search fallbacks) are used. Getting the real
+    /// signed-in category list requires capturing the dedicated chips request
+    /// on a device; until then these titles are a best-effort fallback, not
+    /// the authoritative YouTube categories.
     private static func extractChips(_ json: [String: Any]) -> [FeedChip] {
         var found: [String: FeedChip] = [:]
         // Titles that are navigation entries rather than feed categories —

@@ -1528,8 +1528,11 @@ struct LibraryView: View {
     }
 
     /// History / Watch later shelf: one swipeable row instead of a wrapping grid.
-    /// Cards are plain views with explicit tap/long-press gestures — a Button or
-    /// NavigationLink swallows the long-press gesture, so removal never fired.
+    /// Long-press removal uses the system context menu. A custom
+    /// `.onLongPressGesture` (and especially `.exclusively(before:)`) competes
+    /// with the enclosing ScrollView pan on iOS 14, so the shelf stops
+    /// scrolling and the menu never appears. The native context menu keeps
+    /// both tap-to-play and horizontal scrolling working.
     private func shelf(title: String, videos: [Video], onRemove: ((Video) -> Void)? = nil) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(title).font(.headline).padding(.horizontal, 16)
@@ -1545,12 +1548,15 @@ struct LibraryView: View {
                     }
                     .frame(width: width, alignment: .leading)
                     .contentShape(Rectangle())
-                    // Separate gestures keep the parent ScrollView scrollable
-                    // on iOS 14; a combined `exclusively` gesture swallowed
-                    // the pan and made the whole shelf unresponsive.
                     .onTapGesture { playback.open(video) }
-                    .onLongPressGesture(minimumDuration: 0.5) {
-                        onRemove?(video)
+                    .contextMenu {
+                        if let onRemove = onRemove {
+                            Button {
+                                onRemove(video)
+                            } label: {
+                                Label(L10n.tr("you.removeHistory"), systemImage: "trash")
+                            }
+                        }
                     }
                 }
             }

@@ -58,6 +58,12 @@ enum AccountError: LocalizedError {
     @Published private(set) var channelId: String?
 
     private var tokens: OAuthTokens?
+    /// Bumped on every sign-out. Async token/profile work captures the epoch
+    /// it started with and refuses to write back if sign-out (or a switch)
+    /// happened while a request was in flight. Without this, a late `save()`
+    /// from `validToken()` resurrects the just-deleted keychain item: the
+    /// "sign out does nothing / account is back after reinstall" symptom.
+    private var sessionEpoch = 0
     private let service = "com.newtube.oauth"
     private let account = "youtube"
     private let apiKey = "AIzaSyA8eiZmM1FaDVjRy-df2KTyQ_vz_yYM39w"
@@ -81,7 +87,8 @@ enum AccountError: LocalizedError {
     /// are available from the playlist aggregation page instead, which uses
     /// the same TV client context the token was issued for.
     func validateSession() async {
-        guard let token = try? await validToken() else { return }
+        let epoch = sessionEpoch
+        guard let token = try? await validToken(), epoch == sessionEpoch else { return }
         guard let url = URL(string: "https://www.youtube.com/youtubei/v1/browse?key=\(apiKey)&prettyPrint=false")
         else { return }
         do {
@@ -89,6 +96,7 @@ enum AccountError: LocalizedError {
                                                    body: tvBody(browseId: "FEplaylist_aggregation"),
                                                    token: token)
             let (data, response) = try await LegacyNetwork.data(for: request)
+            guard epoch == sessionEpoch else { return }
             let status = (response as? HTTPURLResponse)?.statusCode ?? 0
             if status == 401 {
                 signOut()
@@ -104,7 +112,7 @@ enum AccountError: LocalizedError {
                 accountName = handle
             }
             if let channelId = Self.signedInChannelId(in: json) {
-                await loadChannelProfile(channelId, token: token)
+                await loadChannelProfile(channelId, token: token, epoch: epoch)
             }
         } catch {
             // Transient network failure: keep the session and try again later.
@@ -175,7 +183,8 @@ enum AccountError: LocalizedError {
         return result
     }
 
-    private func loadChannelProfile(_ channelId: String, token: String) async {
+    private func loadChannelProfile(_ channelId: String, token: String, epoch: Int) async {
+        guard epoch == sessionEpoch else { return }
         self.channelId = channelId
         guard let url = URL(string: "https://www.youtube.com/youtubei/v1/browse?key=\(apiKey)&prettyPrint=false")
         else { return }
@@ -184,6 +193,7 @@ enum AccountError: LocalizedError {
                                                    body: tvBody(browseId: channelId),
                                                    token: token)
             let (data, response) = try await LegacyNetwork.data(for: request)
+            guard epoch == sessionEpoch else { return }
             if (response as? HTTPURLResponse)?.statusCode == 401 { signOut(); return }
             guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
             else { return }
@@ -197,13 +207,14 @@ enum AccountError: LocalizedError {
                 }
                 if photo == nil { photo = Self.largestThumbnail(header["avatar"]) }
             }
+            guard epoch == sessionEpoch else { return }
             if let name, !name.isEmpty { accountName = name }
             if let photo {
                 // The TV client serves a 72px avatar; ask for a larger crop.
                 let upgraded = URL(string: photo.absoluteString.replacingOccurrences(of: "=s72-", with: "=s200-"))
                 let chosen = upgraded ?? photo
                 avatarURL = chosen
-                await loadAvatarImage(from: chosen)
+                await loadAvatarImage(from: chosen, epoch: epoch)
             }
         } catch {
             return
@@ -211,9 +222,9 @@ enum AccountError: LocalizedError {
     }
 
     /// Downloads the avatar and pre-crops it to a circle for tab-bar use.
-    private func loadAvatarImage(from url: URL) async {
+    private func loadAvatarImage(from url: URL, epoch: Int) async {
         guard let (data, _) = try? await LegacyNetwork.data(for: URLRequest(url: url)),
-              let raw = UIImage(data: data)
+              let raw = UIImage(data: data), epoch == sessionEpoch
         else { return }
         let size = min(raw.size.width, raw.size.height)
         let cropped = UIGraphicsImageRenderer(size: CGSize(width: size, height: size)).image { _ in
@@ -362,6 +373,7 @@ enum AccountError: LocalizedError {
 
     /// A valid bearer token, refreshing silently when needed.
     func validToken() async throws -> String {
+        let epoch = sessionEpoch
         guard var current = tokens else { throw AccountError.unauthorized }
         if !current.isExpired { return current.accessToken }
         let body: [String: Any] = [
@@ -371,6 +383,7 @@ enum AccountError: LocalizedError {
             "grant_type": "refresh_token"
         ]
         let data = try await post(tokenURL, body: body)
+        guard epoch == sessionEpoch else { throw AccountError.unauthorized }
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let access = json["access_token"] as? String,
               let expires = json["expires_in"] as? Int
@@ -380,12 +393,16 @@ enum AccountError: LocalizedError {
         }
         current.accessToken = access
         current.expiryDate = Date().addingTimeInterval(TimeInterval(expires))
+        guard epoch == sessionEpoch else { throw AccountError.unauthorized }
         tokens = current
         save(current)
         return access
     }
 
     func signOut() {
+        // Invalidate any in-flight token/profile work before clearing state,
+        // so a late response cannot write the account back after sign-out.
+        sessionEpoch += 1
         tokens = nil
         isSignedIn = false
         accountName = nil

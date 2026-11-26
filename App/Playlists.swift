@@ -66,26 +66,70 @@ struct YTPlaylist: Identifiable, Equatable {
 
     /// Adds a video to a playlist through the InnerTube playlist editor.
     /// Watch later uses the special playlist id `WL`; regular playlists use
-    /// their `VL…` id.
+    /// their `VL…` id. Actions are taken from YouTube's own
+    /// `addToPlaylistServiceEndpoint` (see Opaline PlaylistEdit.swift) instead
+    /// of hand-written `ACTION_ADD_VIDEO`, which the TV client rejects.
     func addToPlaylist(playlistId: String, videoId: String) async -> Bool {
-        guard let token = try? await Account.shared.validToken() else { return false }
-        var body = tvContext()
-        body["playlistId"] = playlistId
-        body["actions"] = [["action": "ACTION_ADD_VIDEO", "addedVideoId": videoId]]
-        let json = try? await post("browse/edit_playlist", body: body, token: token)
-        return json != nil
+        guard let actions = await editActions(playlistId: playlistId, videoId: videoId,
+                                              removing: false) else { return false }
+        return await editPlaylist(playlistId: playlistId, actions: actions)
     }
 
     /// Remove a video from a playlist through the same InnerTube playlist
     /// editor. Only playlists owned by the signed-in account accept this;
     /// YouTube rejects removals on other people's playlists.
     func removeFromPlaylist(playlistId: String, videoId: String) async -> Bool {
+        guard let actions = await editActions(playlistId: playlistId, videoId: videoId,
+                                              removing: true) else { return false }
+        return await editPlaylist(playlistId: playlistId, actions: actions)
+    }
+
+    /// Fetches the exact edit actions YouTube supplies for this (playlist,
+    /// video) pair. `get_add_to_playlist` returns every playlist option with
+    /// `addToPlaylistServiceEndpoint.playlistEditEndpoint.actions` and
+    /// `removeFromPlaylistServiceEndpoint.playlistEditEndpoint.actions`;
+    /// using these verbatim is what native clients do. Returns nil when the
+    /// video is not on the target playlist (or the endpoint shape changes).
+    private func editActions(playlistId: String, videoId: String,
+                             removing: Bool) async -> [[String: Any]]? {
+        guard let token = try? await Account.shared.validToken() else { return nil }
+        var body = tvContext()
+        body["videoIds"] = [videoId]
+        guard let json = try? await post("playlist/get_add_to_playlist",
+                                         body: body, token: token) else { return nil }
+        let wanted = Self.barePlaylistID(playlistId)
+        let endpointKey = removing ? "removeFromPlaylistServiceEndpoint"
+                                   : "addToPlaylistServiceEndpoint"
+        var result: [[String: Any]]?
+        Self.walk(json) { dict in
+            guard result == nil,
+                  let option = dict["playlistAddToOptionRenderer"] as? [String: Any],
+                  let id = option["playlistId"] as? String,
+                  Self.barePlaylistID(id) == wanted,
+                  let endpoint = option[endpointKey] as? [String: Any],
+                  let edit = endpoint["playlistEditEndpoint"] as? [String: Any]
+            else { return }
+            result = edit["actions"] as? [[String: Any]]
+        }
+        return result
+    }
+
+    private static func barePlaylistID(_ id: String) -> String {
+        id.hasPrefix("VL") ? String(id.dropFirst(2)) : id
+    }
+
+    /// Submits server-provided actions to `browse/edit_playlist`. A JSON body
+    /// alone is not success: YouTube answers HTTP 200 with
+    /// `status = STATUS_FAILED` when the edit is rejected (not the owner,
+    /// stale action, etc.), so check the status like the reference client.
+    private func editPlaylist(playlistId: String, actions: [[String: Any]]) async -> Bool {
         guard let token = try? await Account.shared.validToken() else { return false }
         var body = tvContext()
         body["playlistId"] = playlistId
-        body["actions"] = [["action": "ACTION_REMOVE_VIDEO", "removedVideoId": videoId]]
-        let json = try? await post("browse/edit_playlist", body: body, token: token)
-        return json != nil
+        body["actions"] = actions
+        guard let json = try? await post("browse/edit_playlist",
+                                         body: body, token: token) else { return false }
+        return json["status"] as? String == "STATUS_SUCCEEDED"
     }
 
     private func post(_ endpoint: String, body: [String: Any], token: String) async throws -> [String: Any]? {

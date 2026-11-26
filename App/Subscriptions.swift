@@ -97,13 +97,16 @@ struct FeedChannel: Identifiable, Equatable {
         // channel/search browse response must never replace it, otherwise the
         // strip loses every subscription except the one just opened.
         if browseId == "FEsubscriptions" {
-            // The authoritative subscription list lives in the `guide`
-            // sidebar (GuideSubscriptionsSection), not in the FEsubscriptions
-            // video feed — the feed only embeds the first page of channels.
-            let guided = await loadSubscribedChannels(token: token)
-            let parsed = await loadAllChannels(from: json, initial: Self.extractChannels(json))
-            var merged = guided
-            for channel in parsed where !merged.contains(where: { $0.id == channel.id }) {
+            // The authoritative full subscription list comes from the TV
+            // `browse browseId=FEchannels` call with the OAuth token (same as
+            // the reference client). The anonymous guide sidebar only carries
+            // navigation entries, and the FEsubscriptions video feed embeds
+            // just the first page of channels — neither can enumerate all
+            // subscriptions. Keep the feed's cards as a fallback for shape
+            // changes, then add byline-derived names last.
+            let subscribed = await loadSubscribedChannels(token: token)
+            var merged = subscribed
+            for channel in Self.extractChannels(json) where !merged.contains(where: { $0.id == channel.id }) {
                 merged.append(channel)
             }
             for channel in Self.channelsFromVideos(page.videos) {
@@ -114,92 +117,30 @@ struct FeedChannel: Identifiable, Equatable {
         resolveChannelAvatars()
     }
 
-    /// Read the full subscription list from the guide sidebar. This is the
-    /// same source the official app uses for its subscriptions rail and
-    /// returns every subscribed channel, unlike the feed which caps the shelf.
+    /// Fetches the full subscription channel list via TV `browse FEchannels`
+    /// with the OAuth token, following its continuation tokens so every
+    /// channel appears — not just the first page. `guide` was the wrong source:
+    /// anonymously it only returns fixed navigation rows.
     private func loadSubscribedChannels(token: String?) async -> [FeedChannel] {
-        guard let json = try? await post(endpoint: "guide",
-                                         body: ["context": context()],
+        guard let token,
+              let json = try? await post(endpoint: "browse",
+                                         body: ["context": context(), "browseId": "FEchannels"],
                                          token: token) else { return [] }
-        return Self.channelsFromGuide(json)
-    }
-
-    private static func channelsFromGuide(_ json: [String: Any]) -> [FeedChannel] {
-        var result: [FeedChannel] = []
-        var seen = Set<String>()
-        // YouTube's built-in navigation rows also carry UC ids; they are not
-        // subscriptions and must not pollute the channel strip.
-        let builtin: Set<String> = [
-            "UC-9-kyTW8ZkZNDHQJ6FgpwQ",  // Music
-            "UC4R8DWoMoI7CAwX8_LjQHig",  // Live
-            "UCOpNcN46UbXVtpKMrmU4Abg",  // Gaming
-            "UCEgdi0XXI0ZXECEAMYoIWjQ",  // Movies & TV
-            "UC608a6SOvE1TPAgmK5JV6Ug",  // Sports (older id)
-            "UCsZqUoZWVwl1As3xLBhz6Qg"   // News
-        ]
-
-        func collect(_ value: Any) {
-            guard let dict = value as? [String: Any] else {
-                if let array = value as? [Any] { for child in array { collect(child) } }
-                return
-            }
-            // A guide entry is a subscribed channel when its browse endpoint
-            // carries a UC id. Skip the fixed navigation rows (Home/Shorts/…).
-            if let entry = dict["guideEntryRenderer"] as? [String: Any],
-               let cid = browseID(in: entry), !seen.contains(cid), !builtin.contains(cid) {
-                let name = text(entry["formattedTitle"])
-                if !name.isEmpty {
-                    seen.insert(cid)
-                    result.append(FeedChannel(id: cid, name: name,
-                                              avatarURL: thumbnailURL(entry["thumbnail"])))
-                }
-            }
-            for child in dict.values { collect(child) }
-        }
-        collect(json)
-        return result
-    }
-
-    private static func browseID(in value: Any?) -> String? {
-        guard let dict = value as? [String: Any] else { return nil }
-        if let nav = dict["navigationEndpoint"] as? [String: Any],
-           let browse = nav["browseEndpoint"] as? [String: Any],
-           let id = browse["browseId"] as? String,
-           id.hasPrefix("UC"), id.count == 24 { return id }
-        for child in dict.values {
-            if let found = browseID(in: child) { return found }
-        }
-        return nil
-    }
-
-    /// The channel shelf is paginated separately from the video grid. Follow
-    /// its continuation tokens (bounded, with de-duplication) so every
-    /// subscribed channel appears in the strip instead of only the first page.
-    private func loadAllChannels(from json: [String: Any], initial: [FeedChannel]) async -> [FeedChannel] {
-        var result = initial
+        var result = Self.extractChannels(json)
         var seenIDs = Set(result.map { $0.id })
         var seenTokens = Set<String>()
         var queue = Self.continuationTokens(in: json).filter { seenTokens.insert($0).inserted }
-        let token = try? await Account.shared.validToken()
         var requests = 0
-        // The response mixes two independent paginated streams: the channel
-        // shelf and the video grid. Following every token blindly spent the
-        // budget on video pages (which carry no channels). Only continue a
-        // token when its response actually produced channel cards.
         while !queue.isEmpty, requests < 24 {
-            let continuation = queue.removeFirst()
+            let cont = queue.removeFirst()
             requests += 1
             guard let more = try? await post(endpoint: "browse",
-                                             body: ["context": context(), "continuation": continuation],
+                                             body: ["context": context(), "continuation": cont],
                                              token: token) else { continue }
-            let found = Self.extractChannels(more)
-            for channel in found where !seenIDs.contains(channel.id) {
+            for channel in Self.extractChannels(more) where !seenIDs.contains(channel.id) {
                 seenIDs.insert(channel.id)
                 result.append(channel)
             }
-            // Always keep walking: a page can be a pure continuation wrapper
-            // with no channel cards of its own, and gating on `found` here
-            // used to break the chain before later channel pages arrived.
             for next in Self.continuationTokens(in: more) where seenTokens.insert(next).inserted {
                 queue.append(next)
             }
@@ -372,16 +313,19 @@ struct FeedChannel: Identifiable, Equatable {
                     ?? meta?["image"]
                     ?? (meta?["metadata"] as? [String: Any])?["avatar"]
             } else if let tile = dict["tileRenderer"] as? [String: Any] {
-                let type = tile["contentType"] as? String ?? ""
+                // FEchannels tiles carry the channel id in
+                // `onSelectCommand.browseEndpoint.browseId` (see reference
+                // channelFromTile); `contentId`/contentType are not reliable.
                 let rawId = tile["contentId"] as? String ?? ""
                 if rawId.hasPrefix("UC") {
                     cid = rawId
-                } else if type.contains("CHANNEL") {
+                } else {
                     cid = browseID(tile)
                 }
                 let meta = (tile["metadata"] as? [String: Any])?["tileMetadataRenderer"] as? [String: Any]
                 name = text(meta?["title"])
-                avatar = tile["image"]
+                let header = (tile["header"] as? [String: Any])?["tileHeaderRenderer"] as? [String: Any]
+                avatar = tile["image"] ?? header?["thumbnail"] ?? header?["image"] ?? tile["thumbnail"]
             } else if let renderer = dict["channelThumbnailWithLinkRenderer"] as? [String: Any] {
                 cid = browseID(renderer)
                 avatar = renderer["thumbnail"]

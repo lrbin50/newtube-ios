@@ -282,17 +282,11 @@ struct CommentsPanel: View {
 
     @ObservedObject private var store = CommentsStore.shared
     @State private var draft = ""
-    @State private var newestFirst = false
 
-    /// YouTube returns the first page already ranked by 最热门. Only the
-    /// 最新 tab reorders it — by approximate age parsed from the relative
-    /// timestamps YouTube sends, so no extra network request is needed.
-    private var visibleComments: [CommentItem] {
-        guard newestFirst else { return store.comments }
-        return store.comments.sorted {
-            CommentTime.ageSeconds($0.published) < CommentTime.ageSeconds($1.published)
-        }
-    }
+    /// Sorting is done server-side via the protobuf continuation token
+    /// (`CommentsStore.setSort`), matching the official app. The list is
+    /// displayed exactly in the order YouTube returned it.
+    private var visibleComments: [CommentItem] { store.comments }
 
     private var titleText: String {
         if let count, !count.isEmpty {
@@ -323,12 +317,14 @@ struct CommentsPanel: View {
             .padding(.horizontal, 16).padding(.vertical, 10)
 
             // Sort tabs: red filled pill = selected, matching the Android app.
+            // Switching asks YouTube for a freshly ranked page via the
+            // protobuf continuation token, not a local timestamp sort.
             HStack(spacing: 8) {
-                sortTab(title: L10n.tr("comments.top", fallback: "Top"), selected: !newestFirst) {
-                    newestFirst = false
+                sortTab(title: L10n.tr("comments.top", fallback: "Top"), selected: store.currentSort == 0) {
+                    Task { await store.setSort(0) }
                 }
-                sortTab(title: L10n.tr("comments.newest", fallback: "Newest"), selected: newestFirst) {
-                    newestFirst = true
+                sortTab(title: L10n.tr("comments.newest", fallback: "Newest"), selected: store.currentSort == 1) {
+                    Task { await store.setSort(1) }
                 }
                 Spacer(minLength: 0)
             }
