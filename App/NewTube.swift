@@ -112,10 +112,24 @@ struct RootView: View {
 
     @ViewBuilder
     private var youTabContent: some View {
-        // Base symbol; when signed in, applyYouTabAvatar() replaces the tab
-        // item's image with the real photo at the same 22pt icon size.
-        Image(systemName: account.isSignedIn ? "person.crop.circle.fill" : "person.crop.circle")
+        // SwiftUI rebuilds tab items whenever the selection changes. Render the
+        // real avatar here too (not only via the UIKit override below), so a
+        // rebuild can never briefly fall back to the unsigned-in person symbol.
+        Image(uiImage: Self.youTabIcon(account: account))
         Text(L10n.tr("tab.you"))
+    }
+
+    /// The photo used by both SwiftUI and the UIKit tab-bar override. Pre-scale
+    /// to a 22pt icon and force original rendering: iOS 14 otherwise treats a
+    /// bitmap tab image as a template and draws a giant solid circle.
+    private static func youTabIcon(account: Account) -> UIImage {
+        if account.isSignedIn, let photo = account.avatarImage {
+            let side: CGFloat = 22
+            return UIGraphicsImageRenderer(size: CGSize(width: side, height: side)).image { _ in
+                photo.draw(in: CGRect(x: 0, y: 0, width: side, height: side))
+            }.withRenderingMode(.alwaysOriginal)
+        }
+        return UIImage(systemName: account.isSignedIn ? "person.crop.circle.fill" : "person.crop.circle")!
     }
 
     /// Replace the You tab's icon with the signed-in user's real avatar.
@@ -126,7 +140,7 @@ struct RootView: View {
     /// sidesteps that; the size matches the system symbol it replaces.
     /// Signed-out users keep the system person symbol untouched.
     private func applyYouTabAvatar() {
-        DispatchQueue.main.async {
+        let apply = {
             guard let scene = UIApplication.shared.connectedScenes
                     .first(where: { $0.activationState == .foregroundActive }) as? UIWindowScene,
                   let root = scene.windows.first(where: { $0.isKeyWindow })?.rootViewController
@@ -136,19 +150,15 @@ struct RootView: View {
             else { return }
             // "我" is the final tab (Shorts, when enabled, sits before it).
             let index = items.count - 1
-            if account.isSignedIn, let photo = account.avatarImage {
-                let side: CGFloat = 22
-                let icon = UIGraphicsImageRenderer(size: CGSize(width: side, height: side)).image { _ in
-                    photo.draw(in: CGRect(x: 0, y: 0, width: side, height: side))
-                }.withRenderingMode(.alwaysOriginal)
-                items[index].image = icon
-                items[index].selectedImage = icon
-            } else {
-                // Signed out: restore the template symbol so it tints correctly.
-                items[index].image = UIImage(systemName: "person.crop.circle")
-                items[index].selectedImage = UIImage(systemName: "person.crop.circle.fill")
-            }
+            let icon = Self.youTabIcon(account: self.account)
+            items[index].image = icon
+            items[index].selectedImage = account.isSignedIn
+                ? icon : UIImage(systemName: "person.crop.circle.fill")!
         }
+        // Apply immediately (the tab item is rebuilt during selection changes)
+        // and once more after SwiftUI finishes laying out the tab bar.
+        apply()
+        DispatchQueue.main.async(execute: apply)
     }
 
     private static func findTabBar(in vc: UIViewController) -> UITabBar? {
@@ -1128,6 +1138,13 @@ struct LibraryView: View {
     @State private var showChannel = false
     @State private var confirmSignOut = false
     @State private var searchText = ""
+    @State private var pendingHistoryRemoval: Video?
+    @State private var pendingPlaylistRemoval: YTPlaylist?
+    // Playlists are read-only from YouTube; hiding a card here keeps it out of
+    // the shelf on this device across launches.
+    @State private var hiddenPlaylistIDs: Set<String> = Set(
+        UserDefaults.standard.stringArray(forKey: "hiddenLibraryPlaylists") ?? []
+    )
 
     enum Collection: String {
         case myVideos, downloads, films, watchTime
@@ -1141,7 +1158,9 @@ struct LibraryView: View {
                     // Incognito / Share settings) was removed; the avatar and
                     // account actions remain in the navigation bar above.
                     if !library.history.isEmpty {
-                        shelf(title: L10n.tr("you.history"), videos: library.history)
+                        shelf(title: L10n.tr("you.history"), videos: library.history) { video in
+                            pendingHistoryRemoval = video
+                        }
                     }
                     playlistsArea
                     VStack(spacing: 0) {
@@ -1229,6 +1248,26 @@ struct LibraryView: View {
                 ]
             )
         }
+        .actionSheet(item: $pendingHistoryRemoval) { video in
+            ActionSheet(
+                title: Text(L10n.tr("you.removeHistory")),
+                message: Text(video.title).lineLimit(2),
+                buttons: [
+                    .destructive(Text(L10n.tr("common.remove"))) { library.removeHistory(video) },
+                    .cancel()
+                ]
+            )
+        }
+        .actionSheet(item: $pendingPlaylistRemoval) { playlist in
+            ActionSheet(
+                title: Text(L10n.tr("you.removePlaylist")),
+                message: Text(playlist.title).lineLimit(2),
+                buttons: [
+                    .destructive(Text(L10n.tr("common.remove"))) { hide(playlist) },
+                    .cancel()
+                ]
+            )
+        }
         .sheet(isPresented: $showSearch) {
             NavigationView {
                 VStack {
@@ -1287,7 +1326,7 @@ struct LibraryView: View {
     /// watch-later list while loading or when signed out.
     @ViewBuilder
     private var playlistsArea: some View {
-        if !playlists.playlists.isEmpty {
+        if !visiblePlaylists.isEmpty {
             playlistsShelf
         } else if playlists.loading {
             HStack {
@@ -1319,11 +1358,15 @@ struct LibraryView: View {
         }
     }
 
+    private var visiblePlaylists: [YTPlaylist] {
+        playlists.playlists.filter { !hiddenPlaylistIDs.contains($0.id) }
+    }
+
     private var playlistsShelf: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(L10n.tr("you.playlists")).font(.headline).padding(.horizontal, 16)
-            LazyVGrid(columns: gridColumns, spacing: 14) {
-                ForEach(playlists.playlists.prefix(18)) { playlist in
+            horizontalCards(cardHeight: 106) { width in
+                ForEach(visiblePlaylists) { playlist in
                     NavigationLink(destination: PlaylistDetailView(playlist: playlist)) {
                         VStack(alignment: .leading, spacing: 6) {
                             ZStack(alignment: .bottomTrailing) {
@@ -1333,7 +1376,7 @@ struct LibraryView: View {
                                     } else {
                                         Rectangle().fill(Color.secondary.opacity(0.15))
                                             .overlay(Image(systemName: "list.bullet.rectangle")
-                                                .font(.system(size: 28)).foregroundColor(.secondary))
+                                                .font(.system(size: 24)).foregroundColor(.secondary))
                                     }
                                 }
                                 .frame(maxWidth: .infinity)
@@ -1342,37 +1385,52 @@ struct LibraryView: View {
                                 if let count = playlist.count {
                                     HStack(spacing: 3) {
                                         Image(systemName: "line.3.horizontal")
-                                            .font(.system(size: 10, weight: .bold))
-                                        Text("\(count)").font(.system(size: 11, weight: .semibold))
+                                            .font(.system(size: 9, weight: .bold))
+                                        Text("\(count)").font(.system(size: 10, weight: .semibold))
                                     }
                                     .foregroundColor(.white)
-                                    .padding(.horizontal, 6).padding(.vertical, 2)
+                                    .padding(.horizontal, 5).padding(.vertical, 2)
                                     .background(Color.black.opacity(0.8)).cornerRadius(4)
-                                    .padding(6)
+                                    .padding(5)
                                 }
                             }
                             Text(playlist.title)
                                 .font(.caption).foregroundColor(.primary)
                                 .lineLimit(2).multilineTextAlignment(.leading)
-                            Text(L10n.tr("you.private.playlist"))
-                                .font(.caption2).foregroundColor(.secondary)
                         }
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .frame(width: width, alignment: .leading)
                     }
                     .buttonStyle(.plain)
+                    .onLongPressGesture(minimumDuration: 0.5) { pendingPlaylistRemoval = playlist }
                 }
             }
-            .padding(.horizontal, 16)
         }.padding(.bottom, 14)
     }
 
-    /// History shelf as a three-column grid so cards are large enough to read
-    /// while showing roughly three videos per row (like the home feed).
-    private func shelf(title: String, videos: [Video]) -> some View {
+    /// A single horizontally scrollable row showing about three cards at once.
+    private func horizontalCards<Content: View>(
+        cardHeight: CGFloat,
+        @ViewBuilder content: (CGFloat) -> Content
+    ) -> some View {
+        GeometryReader { geo in
+            // 16pt insets on both sides + two 12pt gaps between three cards.
+            let width = max(104, (geo.size.width - 56) / 3)
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(alignment: .top, spacing: 12) { content(width) }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 2)
+            }
+            .frame(height: cardHeight)
+        }
+        .frame(height: cardHeight)
+    }
+
+    /// History / Watch later shelf: one swipeable row instead of a wrapping grid.
+    private func shelf(title: String, videos: [Video], onRemove: ((Video) -> Void)? = nil) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(title).font(.headline).padding(.horizontal, 16)
-            LazyVGrid(columns: gridColumns, spacing: 14) {
-                ForEach(videos.prefix(12)) { video in
+            horizontalCards(cardHeight: 104) { width in
+                ForEach(videos) { video in
                     Button { playback.open(video) } label: {
                         VStack(alignment: .leading, spacing: 6) {
                             RemoteThumbnail(url: video.thumbnailURL)
@@ -1383,17 +1441,18 @@ struct LibraryView: View {
                                 .font(.caption).foregroundColor(.primary)
                                 .lineLimit(2).multilineTextAlignment(.leading)
                         }
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .frame(width: width, alignment: .leading)
                     }
                     .buttonStyle(.plain)
+                    .onLongPressGesture(minimumDuration: 0.5) { onRemove?(video) }
                 }
             }
-            .padding(.horizontal, 16)
         }.padding(.bottom, 14)
     }
 
-    private var gridColumns: [GridItem] {
-        Array(repeating: GridItem(.flexible(), spacing: 12), count: 3)
+    private func hide(_ playlist: YTPlaylist) {
+        hiddenPlaylistIDs.insert(playlist.id)
+        UserDefaults.standard.set(Array(hiddenPlaylistIDs), forKey: "hiddenLibraryPlaylists")
     }
 
     private func row(icon: String, title: String, kind: Collection) -> some View {

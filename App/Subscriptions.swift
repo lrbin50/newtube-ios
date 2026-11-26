@@ -93,10 +93,62 @@ struct FeedChannel: Identifiable, Equatable {
         videos = page.videos
         continuation = page.continuation
         message = videos.isEmpty ? FeedError.badResponse.errorDescription : nil
-        let parsed = Self.extractChannels(json)
-        if !parsed.isEmpty { channels = parsed }
-        else if browseId == "FEsubscriptions" { channels = Self.channelsFromVideos(page.videos) }
+        // Only the subscriptions shelf defines the channel filter list. A
+        // channel/search browse response must never replace it, otherwise the
+        // strip loses every subscription except the one just opened.
+        if browseId == "FEsubscriptions" {
+            let parsed = await loadAllChannels(from: json, initial: Self.extractChannels(json))
+            var merged = parsed
+            for channel in Self.channelsFromVideos(page.videos) {
+                if !merged.contains(where: { $0.name == channel.name }) { merged.append(channel) }
+            }
+            channels = merged
+        }
         resolveChannelAvatars()
+    }
+
+    /// The channel shelf is paginated separately from the video grid. Follow
+    /// its continuation tokens (bounded, with de-duplication) so every
+    /// subscribed channel appears in the strip instead of only the first page.
+    private func loadAllChannels(from json: [String: Any], initial: [FeedChannel]) async -> [FeedChannel] {
+        var result = initial
+        var seen = Set<String>()
+        var queue = Self.continuationTokens(in: json).filter { seen.insert($0).inserted }
+        let token = try? await Account.shared.validToken()
+        var requests = 0
+        while !queue.isEmpty, requests < 12 {
+            let continuation = queue.removeFirst()
+            requests += 1
+            guard let more = try? await post(endpoint: "browse",
+                                             body: ["context": context(), "continuation": continuation],
+                                             token: token) else { continue }
+            for channel in Self.extractChannels(more) {
+                if !result.contains(where: { $0.id == channel.id }) { result.append(channel) }
+            }
+            for next in Self.continuationTokens(in: more) where seen.insert(next).inserted {
+                queue.append(next)
+            }
+        }
+        return result
+    }
+
+    /// Collect every continuation token in a response. Harmless if a video
+    /// pagination token sneaks in: its response simply contributes no channels.
+    private static func continuationTokens(in value: Any) -> [String] {
+        var tokens: [String] = []
+        func walk(_ value: Any) {
+            if let dict = value as? [String: Any] {
+                if let command = dict["continuationCommand"] as? [String: Any],
+                   let token = command["token"] as? String, !token.isEmpty {
+                    tokens.append(token)
+                }
+                for child in dict.values { walk(child) }
+            } else if let array = value as? [Any] {
+                for child in array { walk(child) }
+            }
+        }
+        walk(value)
+        return tokens
     }
 
     /// Kick off deferred avatar resolution for the channel strip once videos are
@@ -181,6 +233,14 @@ struct FeedChannel: Identifiable, Equatable {
     /// shapes InnerTube currently uses. Keeps the first name seen per UC id.
     static func extractChannels(_ json: [String: Any]) -> [FeedChannel] {
         var found: [String: FeedChannel] = [:]
+        var order: [String] = []
+
+        func remember(_ channel: FeedChannel) {
+            if found[channel.id] == nil { order.append(channel.id) }
+            if found[channel.id]?.avatarURL == nil || channel.avatarURL != nil {
+                found[channel.id] = channel
+            }
+        }
 
         func collect(_ value: Any) {
             guard let dict = value as? [String: Any] else {
@@ -192,8 +252,8 @@ struct FeedChannel: Identifiable, Equatable {
                let cid = renderer["channelId"] as? String, cid.hasPrefix("UC") {
                 let name = text(renderer["title"])
                 if !name.isEmpty {
-                    found[cid] = FeedChannel(id: cid, name: name,
-                                             avatarURL: thumbnailURL(renderer["thumbnail"]))
+                    remember(FeedChannel(id: cid, name: name,
+                                         avatarURL: thumbnailURL(renderer["thumbnail"])))
                 }
             }
 
@@ -217,16 +277,14 @@ struct FeedChannel: Identifiable, Equatable {
                 }
             }
             if let cid, let name, !name.isEmpty {
-                if found[cid] == nil || found[cid]?.avatarURL == nil {
-                    found[cid] = FeedChannel(id: cid, name: name, avatarURL: thumbnailURL(avatar))
-                }
+                remember(FeedChannel(id: cid, name: name, avatarURL: thumbnailURL(avatar)))
             }
 
             for child in dict.values { collect(child) }
         }
 
         collect(json)
-        return Array(found.values)
+        return order.compactMap { found[$0] }
     }
 
     /// If the server response carries no explicit channel cards, derive the

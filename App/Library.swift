@@ -69,6 +69,14 @@ struct Video: Codable, Identifiable, Equatable {
         defaults.removeObject(forKey: "positions")
     }
 
+    /// Remove a single entry from the History shelf (long-press action).
+    func removeHistory(_ video: Video) {
+        history.removeAll { $0.id == video.id }
+        positions.removeValue(forKey: video.id)
+        persist(history, "history")
+        defaults.set(positions, forKey: "positions")
+    }
+
     func resumeTime(_ video: Video) -> Double { positions[video.id] ?? 0 }
     func mark(_ video: Video, seconds: Double) {
         guard seconds.isFinite, seconds >= 0 else { return }

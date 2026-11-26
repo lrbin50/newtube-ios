@@ -11,6 +11,7 @@ struct SubscriptionsView: View {
     @ObservedObject private var avatars = ChannelAvatarStore.shared
     @State private var showSignIn = false
     @State private var showSearch = false
+    @State private var showAllChannels = false
     @State private var query = ""
 
     var body: some View {
@@ -63,6 +64,20 @@ struct SubscriptionsView: View {
                         channelStrip
                     }
                     .background(Color(UIColor.systemBackground).edgesIgnoringSafeArea(.top))
+                }
+
+                if showAllChannels {
+                    VStack(spacing: 0) {
+                        Color.clear.frame(height: 100)
+                        HStack(alignment: .top) {
+                            allChannelsPanel
+                            Spacer(minLength: 0)
+                        }
+                        Spacer(minLength: 0)
+                    }
+                    .background(Color.black.opacity(0.28).onTapGesture { showAllChannels = false })
+                    .edgesIgnoringSafeArea(.all)
+                    .zIndex(2)
                 }
 
                 if showSearch {
@@ -119,6 +134,80 @@ struct SubscriptionsView: View {
         .padding(.bottom, 8)
     }
 
+    /// Compact popover opened by the "All" chip. Scrolls vertically through
+    /// every subscribed channel, including channels beyond the first strip page.
+    private var allChannelsPanel: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Text(L10n.tr("subscriptions.allChannels"))
+                    .font(.system(size: 15, weight: .semibold))
+                Spacer()
+                Button { showAllChannels = false } label: {
+                    Image(systemName: "xmark").font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(.secondary)
+                }.padding(6)
+            }
+            .padding(.horizontal, 12).padding(.top, 8)
+
+            ScrollView(.vertical, showsIndicators: true) {
+                LazyVStack(spacing: 0) {
+                    ForEach(store.channels) { channel in
+                        Button {
+                            showAllChannels = false
+                            Task { await store.select(channel.id) }
+                        } label: {
+                            HStack(spacing: 10) {
+                                panelAvatar(channel: channel)
+                                Text(channel.name)
+                                    .font(.system(size: 13))
+                                    .foregroundColor(.primary)
+                                    .lineLimit(1)
+                                Spacer(minLength: 0)
+                                if store.selectedChannelId == channel.id {
+                                    Image(systemName: "checkmark")
+                                        .font(.system(size: 12, weight: .bold))
+                                        .foregroundColor(.accentColor)
+                                }
+                            }
+                            .padding(.horizontal, 12).padding(.vertical, 9)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+            .frame(maxHeight: min(UIScreen.main.bounds.height * 0.55, 420))
+        }
+        .frame(width: min(UIScreen.main.bounds.width - 32, 300), alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 14)
+            .fill(Color(UIColor.secondarySystemBackground)))
+        .overlay(RoundedRectangle(cornerRadius: 14)
+            .stroke(Color(UIColor.separator).opacity(0.5), lineWidth: 0.5))
+        .shadow(color: Color.black.opacity(0.18), radius: 12, x: 0, y: 6)
+        .padding(.leading, 12)
+    }
+
+    @ViewBuilder
+    private func panelAvatar(channel: FeedChannel) -> some View {
+        let url = channel.avatarURL ?? avatars.byChannel[channel.name]
+        Group {
+            if let url {
+                RemoteThumbnail(url: url)
+                    .frame(width: 30, height: 30).clipped().clipShape(Circle())
+            } else {
+                Circle().fill(Color.accentColor.opacity(0.22))
+                    .overlay(Text(channel.name.prefix(1).uppercased())
+                        .font(.system(size: 13, weight: .bold)).foregroundColor(.accentColor))
+                    .frame(width: 30, height: 30)
+            }
+        }
+        .onAppear {
+            if url == nil {
+                avatars.load(channel: channel.name,
+                              sampleVideoID: sampleVideoID(for: channel.name))
+            }
+        }
+    }
+
     /// A representative video id for a channel, used only to resolve its avatar
     /// via the anonymous `next` endpoint when the feed did not carry one.
     private func sampleVideoID(for channelName: String) -> String? {
@@ -129,7 +218,10 @@ struct SubscriptionsView: View {
     private func channelChip(id: String, name: String, url: URL?) -> some View {
         let selected = store.selectedChannelId == id
         let resolved = url ?? avatars.byChannel[name]
-        Button { Task { await store.select(id) } } label: {
+        Button {
+            if id == "all" { showAllChannels = true }
+            else { Task { await store.select(id) } }
+        } label: {
             VStack(spacing: 5) {
                 Group {
                     if let resolved {
