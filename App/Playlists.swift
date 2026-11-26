@@ -69,9 +69,20 @@ struct YTPlaylist: Identifiable, Equatable {
         return videos
     }
 
-    /// Reads `playlistVideoRenderer.setVideoId` for every playlist entry.
+    /// Maps each video id to its playlist-entry token, needed by
+    /// `ACTION_REMOVE_VIDEO`. The token's location depends on the client that
+    /// produced the playlist page (SmartTubeIOS `InnerTubeAPI+VideoRenderers`):
+    ///   - WEB `playlistVideoRenderer`: top-level `setVideoId`
+    ///   - TV `tileRenderer`: `onSelectCommand.watchEndpoint.playlistSetVideoId`
+    ///     (nested; the TV client does NOT emit `playlistVideoRenderer`).
+    /// Only looking at `playlistVideoRenderer` left this map empty on the TV
+    /// client, so removal always fell back to the server-action path that
+    /// fails on the device. Handle both shapes and, as a last resort, search
+    /// the whole entry for either token key.
     private static func setVideoIDs(in json: [String: Any]) -> [String: String] {
         var result: [String: String] = [:]
+
+        // WEB-shaped entries: videoId + top-level setVideoId on the renderer.
         walk(json) { dict in
             guard let renderer = dict["playlistVideoRenderer"] as? [String: Any],
                   let videoID = renderer["videoId"] as? String,
@@ -79,7 +90,37 @@ struct YTPlaylist: Identifiable, Equatable {
             else { return }
             result[videoID] = setID
         }
+
+        // TV-shaped entries: contentId is the video id; the entry token is
+        // nested inside the tile's watch endpoint (`playlistSetVideoId`) or a
+        // "Remove from playlist" menu action (`setVideoId`).
+        walk(json) { dict in
+            guard let tile = dict["tileRenderer"] as? [String: Any],
+                  let videoID = tile["contentId"] as? String, videoID.count == 11,
+                  let setID = findEntryToken(in: tile)
+            else { return }
+            result[videoID] = setID
+        }
         return result
+    }
+
+    /// Recursively finds the playlist-entry token in a tile (bounded depth),
+    /// matching SmartTubeIOS `findPlaylistEntryToken(in:)`.
+    private static func findEntryToken(in value: Any, depth: Int = 0) -> String? {
+        guard depth < 12 else { return nil }
+        if let dict = value as? [String: Any] {
+            for key in ["playlistSetVideoId", "setVideoId"] {
+                if let token = dict[key] as? String, !token.isEmpty { return token }
+            }
+            for child in dict.values {
+                if let token = findEntryToken(in: child, depth: depth + 1) { return token }
+            }
+        } else if let array = value as? [Any] {
+            for child in array {
+                if let token = findEntryToken(in: child, depth: depth + 1) { return token }
+            }
+        }
+        return nil
     }
 
     private func browse(browseId: String, token: String) async throws -> [String: Any]? {
