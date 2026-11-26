@@ -1251,7 +1251,7 @@ struct LibraryView: View {
         .actionSheet(item: $pendingHistoryRemoval) { video in
             ActionSheet(
                 title: Text(L10n.tr("you.removeHistory")),
-                message: Text(video.title).lineLimit(2),
+                message: Text(video.title),
                 buttons: [
                     .destructive(Text(L10n.tr("common.remove"))) { library.removeHistory(video) },
                     .cancel()
@@ -1261,7 +1261,7 @@ struct LibraryView: View {
         .actionSheet(item: $pendingPlaylistRemoval) { playlist in
             ActionSheet(
                 title: Text(L10n.tr("you.removePlaylist")),
-                message: Text(playlist.title).lineLimit(2),
+                message: Text(playlist.title),
                 buttons: [
                     .destructive(Text(L10n.tr("common.remove"))) { hide(playlist) },
                     .cancel()
