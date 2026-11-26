@@ -80,9 +80,10 @@ struct Spinner: UIViewRepresentable {
     var tint: UIColor? = nil
 
     func makeUIView(context: Context) -> UIActivityIndicatorView {
-        let view = UIActivityIndicatorView(style: size >= 30 ? .medium : .small)
+        let view = UIActivityIndicatorView(style: size >= 30 ? .large : .medium)
         if let tint { view.color = tint }
         view.hidesWhenStopped = true
+        if size < 20 { view.transform = CGAffineTransform(scaleX: size / 20, y: size / 20) }
         view.startAnimating()
         return view
     }
