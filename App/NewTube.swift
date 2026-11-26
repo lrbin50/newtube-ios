@@ -1140,6 +1140,7 @@ struct LibraryView: View {
     @State private var searchText = ""
     @State private var pendingHistoryRemoval: Video?
     @State private var pendingPlaylistRemoval: YTPlaylist?
+    @State private var openPlaylistID: String?
     // Playlists are read-only from YouTube; hiding a card here keeps it out of
     // the shelf on this device across launches.
     @State private var hiddenPlaylistIDs: Set<String> = Set(
@@ -1367,41 +1368,49 @@ struct LibraryView: View {
             Text(L10n.tr("you.playlists")).font(.headline).padding(.horizontal, 16)
             horizontalCards(cardHeight: 106) { width in
                 ForEach(visiblePlaylists) { playlist in
-                    NavigationLink(destination: PlaylistDetailView(playlist: playlist)) {
-                        VStack(alignment: .leading, spacing: 6) {
-                            ZStack(alignment: .bottomTrailing) {
-                                Group {
-                                    if let url = playlist.thumbnail {
-                                        RemoteThumbnail(url: url)
-                                    } else {
-                                        Rectangle().fill(Color.secondary.opacity(0.15))
-                                            .overlay(Image(systemName: "list.bullet.rectangle")
-                                                .font(.system(size: 24)).foregroundColor(.secondary))
-                                    }
-                                }
-                                .frame(maxWidth: .infinity)
-                                .aspectRatio(16 / 9, contentMode: .fit)
-                                .clipped().cornerRadius(8)
-                                if let count = playlist.count {
-                                    HStack(spacing: 3) {
-                                        Image(systemName: "line.3.horizontal")
-                                            .font(.system(size: 9, weight: .bold))
-                                        Text("\(count)").font(.system(size: 10, weight: .semibold))
-                                    }
-                                    .foregroundColor(.white)
-                                    .padding(.horizontal, 5).padding(.vertical, 2)
-                                    .background(Color.black.opacity(0.8)).cornerRadius(4)
-                                    .padding(5)
+                    VStack(alignment: .leading, spacing: 6) {
+                        ZStack(alignment: .bottomTrailing) {
+                            Group {
+                                if let url = playlist.thumbnail {
+                                    RemoteThumbnail(url: url)
+                                } else {
+                                    Rectangle().fill(Color.secondary.opacity(0.15))
+                                        .overlay(Image(systemName: "list.bullet.rectangle")
+                                            .font(.system(size: 24)).foregroundColor(.secondary))
                                 }
                             }
-                            Text(playlist.title)
-                                .font(.caption).foregroundColor(.primary)
-                                .lineLimit(2).multilineTextAlignment(.leading)
+                            .frame(width: width, height: width * 9 / 16)
+                            .clipped().cornerRadius(8)
+                            if let count = playlist.count {
+                                HStack(spacing: 3) {
+                                    Image(systemName: "line.3.horizontal")
+                                        .font(.system(size: 9, weight: .bold))
+                                    Text("\(count)").font(.system(size: 10, weight: .semibold))
+                                }
+                                .foregroundColor(.white)
+                                .padding(.horizontal, 5).padding(.vertical, 2)
+                                .background(Color.black.opacity(0.8)).cornerRadius(4)
+                                .padding(5)
+                            }
                         }
-                        .frame(width: width, alignment: .leading)
+                        Text(playlist.title)
+                            .font(.caption).foregroundColor(.primary)
+                            .lineLimit(2).multilineTextAlignment(.leading)
                     }
-                    .buttonStyle(.plain)
+                    .frame(width: width, alignment: .leading)
+                    .contentShape(Rectangle())
+                    .onTapGesture { openPlaylistID = playlist.id }
                     .onLongPressGesture(minimumDuration: 0.5) { pendingPlaylistRemoval = playlist }
+                    .background(
+                        NavigationLink(
+                            destination: PlaylistDetailView(playlist: playlist),
+                            isActive: Binding(
+                                get: { openPlaylistID == playlist.id },
+                                set: { if !$0 { openPlaylistID = nil } }
+                            ),
+                            label: { EmptyView() }
+                        ).hidden()
+                    )
                 }
             }
         }.padding(.bottom, 14)
@@ -1426,24 +1435,24 @@ struct LibraryView: View {
     }
 
     /// History / Watch later shelf: one swipeable row instead of a wrapping grid.
+    /// Cards are plain views with explicit tap/long-press gestures — a Button or
+    /// NavigationLink swallows the long-press gesture, so removal never fired.
     private func shelf(title: String, videos: [Video], onRemove: ((Video) -> Void)? = nil) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(title).font(.headline).padding(.horizontal, 16)
             horizontalCards(cardHeight: 104) { width in
                 ForEach(videos) { video in
-                    Button { playback.open(video) } label: {
-                        VStack(alignment: .leading, spacing: 6) {
-                            RemoteThumbnail(url: video.thumbnailURL)
-                                .frame(maxWidth: .infinity)
-                                .aspectRatio(16 / 9, contentMode: .fit)
-                                .clipped().cornerRadius(8)
-                            Text(video.title)
-                                .font(.caption).foregroundColor(.primary)
-                                .lineLimit(2).multilineTextAlignment(.leading)
-                        }
-                        .frame(width: width, alignment: .leading)
+                    VStack(alignment: .leading, spacing: 6) {
+                        RemoteThumbnail(url: video.thumbnailURL)
+                            .frame(width: width, height: width * 9 / 16)
+                            .clipped().cornerRadius(8)
+                        Text(video.title)
+                            .font(.caption).foregroundColor(.primary)
+                            .lineLimit(2).multilineTextAlignment(.leading)
                     }
-                    .buttonStyle(.plain)
+                    .frame(width: width, alignment: .leading)
+                    .contentShape(Rectangle())
+                    .onTapGesture { playback.open(video) }
                     .onLongPressGesture(minimumDuration: 0.5) { onRemove?(video) }
                 }
             }
@@ -1632,6 +1641,7 @@ struct PlaylistDetailView: View {
     let playlist: YTPlaylist
     @State private var videos: [Video] = []
     @State private var loading = true
+    @State private var menuVideo: Video?
 
     var body: some View {
         Group {
@@ -1647,28 +1657,40 @@ struct PlaylistDetailView: View {
                         spacing: 18
                     ) {
                         ForEach(videos) { video in
-                            Button { playback.open(video) } label: {
-                                VStack(alignment: .leading, spacing: 8) {
-                                    RemoteThumbnail(url: video.thumbnailURL)
-                                        .frame(maxWidth: .infinity)
-                                        .aspectRatio(16 / 9, contentMode: .fit)
-                                        .clipped().cornerRadius(8)
-                                    Text(video.title)
-                                        .font(.system(size: 13, weight: .medium))
-                                        .foregroundColor(.primary)
-                                        .lineLimit(2)
-                                        .multilineTextAlignment(.leading)
+                            ZStack(alignment: .topTrailing) {
+                                Button { playback.open(video) } label: {
+                                    VStack(alignment: .leading, spacing: 8) {
+                                        RemoteThumbnail(url: video.thumbnailURL)
+                                            .frame(maxWidth: .infinity)
+                                            .aspectRatio(16 / 9, contentMode: .fit)
+                                            .clipped().cornerRadius(8)
+                                        Text(video.title)
+                                            .font(.system(size: 13, weight: .medium))
+                                            .foregroundColor(.primary)
+                                            .lineLimit(2)
+                                            .multilineTextAlignment(.leading)
+                                    }
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .contentShape(Rectangle())
+                                    .contextMenu {
+                                        Button(L10n.tr("you.addToQueue")) { playback.enqueue(video) }
+                                        Button(library.saved.contains(where: { $0.id == video.id })
+                                               ? L10n.tr("you.removeSaved") : L10n.tr("card.watchLater")) {
+                                            library.bookmark(video)
+                                        }
+                                        ShareButton(url: video.watchURL)
+                                    }
                                 }
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                            }
-                            .buttonStyle(.plain)
-                            .contextMenu {
-                                Button(L10n.tr("you.addToQueue")) { playback.enqueue(video) }
-                                Button(library.saved.contains(where: { $0.id == video.id })
-                                       ? L10n.tr("you.removeSaved") : L10n.tr("card.watchLater")) {
-                                    library.bookmark(video)
+                                .buttonStyle(.plain)
+                                // Visible overflow button so the per-video action
+                                // list is discoverable (long-press alone missed it).
+                                Button { menuVideo = video } label: {
+                                    Image(systemName: "ellipsis.circle.fill")
+                                        .font(.system(size: 20))
+                                        .foregroundColor(.white)
+                                        .shadow(radius: 2)
                                 }
-                                ShareButton(url: video.watchURL)
+                                .padding(4)
                             }
                         }
                     }
@@ -1691,6 +1713,20 @@ struct PlaylistDetailView: View {
                 }
             }
         }
+        .actionSheet(item: $menuVideo) { video in
+            ActionSheet(
+                title: Text(video.title),
+                buttons: [
+                    .default(Text(L10n.tr("you.addToQueue"))) { playback.enqueue(video) },
+                    .default(Text(library.saved.contains(where: { $0.id == video.id })
+                        ? L10n.tr("you.removeSaved") : L10n.tr("card.watchLater"))) {
+                        library.bookmark(video)
+                    },
+                    .default(Text(L10n.tr("common.share"))) { presentShareSheet(url: video.watchURL) },
+                    .cancel()
+                ]
+            )
+        }
         .onAppear {
             guard loading else { return }
             Task {
@@ -1698,6 +1734,20 @@ struct PlaylistDetailView: View {
                 loading = false
             }
         }
+    }
+
+    private func presentShareSheet(url: URL) {
+        guard let scene = UIApplication.shared.connectedScenes
+                .first(where: { $0.activationState == .foregroundActive }) as? UIWindowScene,
+              let root = scene.windows.first(where: { $0.isKeyWindow })?.rootViewController
+              ?? scene.windows.first?.rootViewController
+        else { return }
+        let controller = UIActivityViewController(activityItems: [url], applicationActivities: nil)
+        controller.popoverPresentationController?.sourceView = root.view
+        controller.popoverPresentationController?.sourceRect = CGRect(
+            x: root.view.bounds.midX, y: root.view.bounds.midY, width: 1, height: 1
+        )
+        root.present(controller, animated: true)
     }
 }
 

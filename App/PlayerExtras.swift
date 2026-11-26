@@ -61,7 +61,7 @@ struct ResolvingOverlay: View {
                 Color.black.opacity(0.55)
             }
             VStack(spacing: 12) {
-                Spinner(size: 46)
+                Spinner(size: 20, tint: .white)
                 Text(L10n.tr("player.loading", fallback: "Loading…"))
                     .font(.footnote.weight(.medium))
                     .foregroundColor(.white)
@@ -71,20 +71,24 @@ struct ResolvingOverlay: View {
     }
 }
 
-/// A smooth rotating arc spinner in YouTube red.
-struct Spinner: View {
+/// System spinner backed by UIActivityIndicatorView: it only rotates — no
+/// layout animation can slide or bounce it, unlike a SwiftUI rotationEffect
+/// that gets restarted whenever the surrounding view re-renders.
+struct Spinner: UIViewRepresentable {
+    /// Requested diameter from call sites; only used to pick the style.
     var size: CGFloat = 40
-    @State private var spinning = false
+    var tint: UIColor? = nil
 
-    var body: some View {
-        Circle()
-            .trim(from: 0.08, to: 0.92)
-            .stroke(AngularGradient(colors: [Color.red, Color.white], center: .center),
-                    style: StrokeStyle(lineWidth: 4, lineCap: .round))
-            .frame(width: size, height: size)
-            .rotationEffect(.degrees(spinning ? 360 : 0))
-            .animation(.linear(duration: 0.9).repeatForever(autoreverses: false), value: spinning)
-            .onAppear { spinning = true }
+    func makeUIView(context: Context) -> UIActivityIndicatorView {
+        let view = UIActivityIndicatorView(style: size >= 30 ? .medium : .small)
+        if let tint { view.color = tint }
+        view.hidesWhenStopped = true
+        view.startAnimating()
+        return view
+    }
+
+    func updateUIView(_ uiView: UIActivityIndicatorView, context: Context) {
+        if let tint { uiView.color = tint }
     }
 }
 
