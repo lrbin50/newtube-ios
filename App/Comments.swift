@@ -148,7 +148,7 @@ final class CommentsStore: ObservableObject {
             postError = L10n.tr("comments.signInHint", fallback: "Sign in to join the conversation")
             return false
         }
-        guard let params = createParams, let id = videoId else {
+        guard let id = videoId else {
             postError = L10n.tr("comments.postFailed", fallback: "Couldn't post comment")
             return false
         }
@@ -156,16 +156,17 @@ final class CommentsStore: ObservableObject {
         defer { sending = false }
         do {
             let token = try await Account.shared.validToken()
-            // A signed-in context plus the visitorData that issued the
-            // createCommentParams is required; an anonymous context makes the
-            // server reject a perfectly valid token (403 PERMISSION_DENIED).
-            var ctx = clientContext
-            ctx["user"] = ["isSignedIn": true]
-            if let visitor = visitorData,
-               var client = ctx["client"] as? [String: Any] {
-                client["visitorData"] = visitor
-                ctx["client"] = client
+            // The composer params from the anonymous read don't match the
+            // logged-in session, so the server rejects the post. Fetch a
+            // signed-in payload right before posting and use its params +
+            // visitorData with the same bearer.
+            let composer = await signedComposer(token: token)
+            guard let params = composer?.params ?? createParams else {
+                postError = L10n.tr("comments.reauthHint", fallback: "评论被拒绝，请在设置里退出并重新登录后重试")
+                return false
             }
+            if let visitor = composer?.visitor { visitorData = visitor }
+            let ctx = signedContext(token: token)
             let (data, response) = try await LegacyNetwork.data(for: makeRequest(
                 endpoint: "comment/create_comment",
                 body: [
@@ -211,10 +212,25 @@ final class CommentsStore: ObservableObject {
 
     // MARK: internals
 
+    /// Reading comments must stay anonymous. Attaching the OAuth bearer or an
+    /// `isSignedIn` context to the `next` read requests makes YouTube return a
+    /// different (or empty) comment section — the panel then reports
+    /// "无法加载评论" even though the video has comments. Sign-in is only
+    /// needed when POSTing, and is built separately in `post(_:)`.
     private var clientContext: [String: Any] {
-        var ctx: [String: Any] = ["client": ["clientName": "ANDROID", "clientVersion": "20.10.38",
+        ["client": ["clientName": "ANDROID", "clientVersion": "20.10.38",
                     "androidSdkVersion": 30, "hl": "en", "gl": "US"]]
-        if Account.shared.isSignedIn { ctx["user"] = ["isSignedIn": true] }
+    }
+
+    /// Signed variant used only to obtain a composer token that matches the
+    /// logged-in session before posting.
+    private func signedContext(token: String) -> [String: Any] {
+        var ctx = clientContext
+        ctx["user"] = ["isSignedIn": true]
+        if var client = ctx["client"] as? [String: Any] {
+            client["visitorData"] = visitorData
+            ctx["client"] = client
+        }
         return ctx
     }
 
@@ -249,16 +265,25 @@ final class CommentsStore: ObservableObject {
         if let params = params { createParams = params }
     }
 
+    /// Anonymous InnerTube read. Never attach the OAuth token here — the
+    /// comment section is public and a bearer on `next` breaks the response.
     private func post(_ endpoint: String, body: [String: Any]) async throws -> [String: Any]? {
-        // createCommentParams must be issued for the signed-in session: an
-        // anonymous `next` yields a guest token that the server rejects once
-        // we post with the OAuth bearer.
-        let auth = try? await Account.shared.validToken()
-        let (data, response) = try await LegacyNetwork.data(for: makeRequest(endpoint: endpoint, body: body, authorization: auth))
+        let (data, response) = try await LegacyNetwork.data(for: makeRequest(endpoint: endpoint, body: body, authorization: nil))
         guard let http = response as? HTTPURLResponse, http.statusCode == 200,
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         else { return nil }
         return json
+    }
+
+    /// Fetch a fresh signed-in composer payload so createCommentParams and
+    /// visitorData belong to the same authenticated session as the bearer.
+    private func signedComposer(token: String) async -> (params: String, visitor: String?)? {
+        guard let json = try? await post("next", body: [
+            "context": signedContext(token: token), "videoId": videoId ?? ""
+        ]) else { return nil }
+        guard let params = Self.createParams(in: json) else { return nil }
+        let visitor = (json["responseContext"] as? [String: Any])?["visitorData"] as? String
+        return (params, visitor)
     }
 
     private func makeRequest(endpoint: String, body: [String: Any], authorization: String?) -> URLRequest {

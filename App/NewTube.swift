@@ -635,7 +635,7 @@ struct FullScreenPlayerView: View {
                             playerControls(landscape: false)
                         }
                         if showComments {
-                            CommentsPanel(videoId: video.id, count: meta.comments) {
+                            CommentsPanel(videoId: video.id, count: commentCountValue) {
                                 withAnimation(.easeIn(duration: 0.2)) { showComments = false }
                             }
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -664,7 +664,7 @@ struct FullScreenPlayerView: View {
                 if showComments && landscape {
                     VStack(spacing: 0) {
                         Spacer(minLength: 0)
-                        CommentsPanel(videoId: video.id, count: meta.comments) {
+                        CommentsPanel(videoId: video.id, count: commentCountValue) {
                             withAnimation(.easeIn(duration: 0.2)) { showComments = false }
                         }
                         .frame(height: geo.size.height * 0.72)
@@ -866,8 +866,17 @@ struct FullScreenPlayerView: View {
         }
     }
 
+    /// InnerTube dropped `commentCount` from the player payload, so fall back
+    /// to the number of comments actually loaded (accurate for the common
+    /// case where the first page contains the whole thread).
+    private var commentCountValue: String? {
+        if let count = meta.comments, !count.isEmpty { return count }
+        if !comments.comments.isEmpty { return "\(comments.comments.count)" }
+        return nil
+    }
+
     private var commentCountText: String {
-        if let count = meta.comments, !count.isEmpty {
+        if let count = commentCountValue {
             return String(format: L10n.tr("comments.countFormat", fallback: "%@ comments"), count)
         }
         return L10n.tr("common.comments")
@@ -1475,11 +1484,14 @@ struct LibraryView: View {
                     }
                     .frame(width: width, alignment: .leading)
                     .contentShape(Rectangle())
-                    .gesture(
-                        LongPressGesture(minimumDuration: 0.4)
-                            .onEnded { _ in pendingPlaylistRemoval = playlist }
-                            .exclusively(before: TapGesture().onEnded { _ in openPlaylistID = playlist.id })
-                    )
+                    // Keep tap and long-press as separate stock gestures. The
+                    // `.gesture(LongPress.exclusively(before: Tap))` variant
+                    // captured the parent horizontal ScrollView's pan on
+                    // iOS 14, so the shelf could not scroll and taps died.
+                    .onTapGesture { openPlaylistID = playlist.id }
+                    .onLongPressGesture(minimumDuration: 0.5) {
+                        pendingPlaylistRemoval = playlist
+                    }
                     .background(
                         NavigationLink(
                             destination: PlaylistDetailView(playlist: playlist),
@@ -1533,11 +1545,13 @@ struct LibraryView: View {
                     }
                     .frame(width: width, alignment: .leading)
                     .contentShape(Rectangle())
-                    .gesture(
-                        LongPressGesture(minimumDuration: 0.4)
-                            .onEnded { _ in onRemove?(video) }
-                            .exclusively(before: TapGesture().onEnded { _ in playback.open(video) })
-                    )
+                    // Separate gestures keep the parent ScrollView scrollable
+                    // on iOS 14; a combined `exclusively` gesture swallowed
+                    // the pan and made the whole shelf unresponsive.
+                    .onTapGesture { playback.open(video) }
+                    .onLongPressGesture(minimumDuration: 0.5) {
+                        onRemove?(video)
+                    }
                 }
             }
         }.padding(.bottom, 14)
