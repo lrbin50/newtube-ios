@@ -594,7 +594,11 @@ struct FullScreenPlayerView: View {
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
                             .contentShape(Rectangle())
                             .onTapGesture { revealControls() }
-                        if playback.resolving { ResolvingOverlay(thumbnail: video.thumbnailURL) }
+                        if playback.resolving {
+                            ResolvingOverlay(thumbnail: video.thumbnailURL)
+                                .frame(width: geo.size.width, height: geo.size.height)
+                                .clipped()
+                        }
                         playerControls(landscape: true)
                     }
                 } else {
@@ -610,7 +614,11 @@ struct FullScreenPlayerView: View {
                                 .frame(height: geo.size.width * 9 / 16)
                                 .contentShape(Rectangle())
                                 .onTapGesture { revealControls() }
-                            if playback.resolving { ResolvingOverlay(thumbnail: video.thumbnailURL) }
+                            if playback.resolving {
+                                ResolvingOverlay(thumbnail: video.thumbnailURL)
+                                    .frame(width: geo.size.width, height: geo.size.width * 9 / 16)
+                                    .clipped()
+                            }
                             playerControls(landscape: false)
                         }
                         if showComments {

@@ -52,13 +52,15 @@ struct ResolvingOverlay: View {
 
     var body: some View {
         ZStack {
+            Color.black.opacity(thumbnail == nil ? 0.55 : 0.32)
+            // Color.clear fixes the overlay's size to whatever the caller
+            // proposes; a plain scaledToFill image would report its natural
+            // "cover" size and blow up the whole player layout.
             if let thumbnail {
-                RemoteThumbnail(url: thumbnail)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                Color.clear
+                    .overlay(RemoteThumbnail(url: thumbnail))
+                    .overlay(Color.black.opacity(0.32))
                     .clipped()
-                Color.black.opacity(0.32)
-            } else {
-                Color.black.opacity(0.55)
             }
             VStack(spacing: 12) {
                 Spinner(size: 20, tint: .white)
