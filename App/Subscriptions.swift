@@ -242,7 +242,12 @@ struct FeedChannel: Identifiable, Equatable {
         let thumbs = (dict["thumbnails"] as? [[String: Any]])
             ?? (dict["sources"] as? [[String: Any]])
         guard let last = thumbs?.last, let url = last["url"] as? String else { return nil }
-        return URL(string: url)
+        // FEchannels serves avatar URLs as protocol-relative `//yt3.ggpht.com/...`.
+        // URL(string:) treats that as a relative path and the image never loads.
+        // The reference client's `normalizeThumbnailURL` prepends https: — do
+        // the same here so every channel avatar resolves to a real network URL.
+        let normalized = url.hasPrefix("//") ? "https:\(url)" : url
+        return URL(string: normalized)
     }
 
     /// Deep-walks the subscriptions response for channel cards in any of the

@@ -23,6 +23,12 @@ struct YTPlaylist: Identifiable, Equatable {
     @Published private(set) var loading = false
     @Published private(set) var message: String?
 
+    /// Playlist-entry token (`playlistVideoRenderer.setVideoId`) keyed by video
+    /// id. YouTube's `ACTION_REMOVE_VIDEO` removes a specific *entry* and
+    /// requires this token — sending the raw video id under `removedVideoId`
+    /// is silently ignored (see SmartTubeIOS removeFromWatchLater / #122).
+    private var setVideoIDs: [String: String] = [:]
+
     private let apiKey = "AIzaSyA8eiZmM1FaDVjRy-df2KTyQ_vz_yYM39w"
     private let tvClientVersion = "7.20261123.19.00"
 
@@ -51,11 +57,29 @@ struct YTPlaylist: Identifiable, Equatable {
     }
 
     /// Videos inside a playlist, reusing the shared structure-agnostic
-    /// video parser from Feed.
+    /// video parser from Feed. Also remembers each entry's `setVideoId`, which
+    /// is required to remove that exact playlist entry later.
     func videos(of playlist: YTPlaylist) async -> [Video] {
         guard let token = try? await Account.shared.validToken() else { return [] }
-        let json = try? await browse(browseId: playlist.id, token: token)
-        return Feed.parse(json ?? [:]).videos.map { $0.video }
+        guard let json = try? await browse(browseId: playlist.id, token: token) else { return [] }
+        let videos = Feed.parse(json).videos.map { $0.video }
+        for (videoID, entryID) in Self.setVideoIDs(in: json) {
+            setVideoIDs[videoID] = entryID
+        }
+        return videos
+    }
+
+    /// Reads `playlistVideoRenderer.setVideoId` for every playlist entry.
+    private static func setVideoIDs(in json: [String: Any]) -> [String: String] {
+        var result: [String: String] = [:]
+        walk(json) { dict in
+            guard let renderer = dict["playlistVideoRenderer"] as? [String: Any],
+                  let videoID = renderer["videoId"] as? String,
+                  let setID = renderer["setVideoId"] as? String
+            else { return }
+            result[videoID] = setID
+        }
+        return result
     }
 
     private func browse(browseId: String, token: String) async throws -> [String: Any]? {
@@ -72,16 +96,28 @@ struct YTPlaylist: Identifiable, Equatable {
     func addToPlaylist(playlistId: String, videoId: String) async -> Bool {
         guard let actions = await editActions(playlistId: playlistId, videoId: videoId,
                                               removing: false) else { return false }
-        return await editPlaylist(playlistId: playlistId, actions: actions)
+        return await editPlaylist(playlistId: Self.barePlaylistID(playlistId), actions: actions)
     }
 
-    /// Remove a video from a playlist through the same InnerTube playlist
-    /// editor. Only playlists owned by the signed-in account accept this;
-    /// YouTube rejects removals on other people's playlists.
+    /// Remove a video from a playlist. YouTube keys `ACTION_REMOVE_VIDEO` by
+    /// the playlist-entry token (`setVideoId`), not the raw video id — a plain
+    /// `removedVideoId` is silently ignored (SmartTubeIOS #122). Prefer that
+    /// token; if this playlist was opened before tokens were captured, fall
+    /// back to the server-provided action from `get_add_to_playlist`.
     func removeFromPlaylist(playlistId: String, videoId: String) async -> Bool {
+        let bare = Self.barePlaylistID(playlistId)
+        if let setID = setVideoIDs[videoId] {
+            let action: [String: Any] = ["action": "ACTION_REMOVE_VIDEO", "setVideoId": setID]
+            if await editPlaylist(playlistId: bare, actions: [action]) {
+                setVideoIDs.removeValue(forKey: videoId)
+                return true
+            }
+        }
         guard let actions = await editActions(playlistId: playlistId, videoId: videoId,
                                               removing: true) else { return false }
-        return await editPlaylist(playlistId: playlistId, actions: actions)
+        let ok = await editPlaylist(playlistId: bare, actions: actions)
+        if ok { setVideoIDs.removeValue(forKey: videoId) }
+        return ok
     }
 
     /// Fetches the exact edit actions YouTube supplies for this (playlist,

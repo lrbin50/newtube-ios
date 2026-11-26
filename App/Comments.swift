@@ -212,25 +212,46 @@ final class CommentsStore: ObservableObject {
             }
             if let visitor = composer?.visitor { visitorData = visitor }
             let ctx = signedContext(token: token)
-            let (data, response) = try await LegacyNetwork.data(for: makeRequest(
+            // YouTube's canonical create_comment body carries commentText as a
+            // runs object, not a bare string (a plain string is rejected by
+            // several client contexts). Send the structured form first and
+            // retry the legacy string form only on a 400, so neither shape
+            // silently blocks posting.
+            let runsBody: [String: Any] = [
+                "context": ctx,
+                "commentText": ["runs": [["text": trimmed]]],
+                "createCommentParams": params
+            ]
+            var (data, response) = try await LegacyNetwork.data(for: makeRequest(
                 endpoint: "comment/create_comment",
-                body: [
+                body: runsBody,
+                authorization: token
+            ))
+            var statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
+            if statusCode == 400 {
+                let stringBody: [String: Any] = [
                     "context": ctx,
                     "commentText": trimmed,
                     "createCommentParams": params
-                ],
-                authorization: token
-            ))
-            // `http` is not bound in a guard-else block; read the status
-            // separately so the 403 hint can be shown reliably.
-            let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
+                ]
+                let retry = try await LegacyNetwork.data(for: makeRequest(
+                    endpoint: "comment/create_comment",
+                    body: stringBody,
+                    authorization: token
+                ))
+                data = retry.0
+                response = retry.1
+                statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
+            }
+            // Both body shapes have been tried; surface YouTube's own message
+            // plus the HTTP code so a rejected post is diagnosable in one pass
+            // (403 = credential/params, 400 = body shape, 5xx = server).
             guard statusCode == 200 else {
                 let detail = Self.apiMessage(in: data)
-                if statusCode == 403 {
-                    postError = detail ?? L10n.tr("comments.reauthHint", fallback: "评论被拒绝，请在设置里退出并重新登录后重试")
-                } else {
-                    postError = detail ?? L10n.tr("comments.postFailed", fallback: "Couldn't post comment")
-                }
+                let hint = detail ?? (statusCode == 403
+                    ? L10n.tr("comments.reauthHint", fallback: "评论被拒绝，请在设置里退出并重新登录后重试")
+                    : L10n.tr("comments.postFailed", fallback: "Couldn't post comment"))
+                postError = "\(hint) [\(statusCode)]"
                 return false
             }
             // Insert the accepted comment locally instead of reloading the
