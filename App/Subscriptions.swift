@@ -97,14 +97,79 @@ struct FeedChannel: Identifiable, Equatable {
         // channel/search browse response must never replace it, otherwise the
         // strip loses every subscription except the one just opened.
         if browseId == "FEsubscriptions" {
+            // The authoritative subscription list lives in the `guide`
+            // sidebar (GuideSubscriptionsSection), not in the FEsubscriptions
+            // video feed — the feed only embeds the first page of channels.
+            let guided = await loadSubscribedChannels(token: token)
             let parsed = await loadAllChannels(from: json, initial: Self.extractChannels(json))
-            var merged = parsed
+            var merged = guided
+            for channel in parsed where !merged.contains(where: { $0.id == channel.id }) {
+                merged.append(channel)
+            }
             for channel in Self.channelsFromVideos(page.videos) {
                 if !merged.contains(where: { $0.name == channel.name }) { merged.append(channel) }
             }
             channels = merged
         }
         resolveChannelAvatars()
+    }
+
+    /// Read the full subscription list from the guide sidebar. This is the
+    /// same source the official app uses for its subscriptions rail and
+    /// returns every subscribed channel, unlike the feed which caps the shelf.
+    private func loadSubscribedChannels(token: String?) async -> [FeedChannel] {
+        guard let json = try? await post(endpoint: "guide",
+                                         body: ["context": context()],
+                                         token: token) else { return [] }
+        return Self.channelsFromGuide(json)
+    }
+
+    private static func channelsFromGuide(_ json: [String: Any]) -> [FeedChannel] {
+        var result: [FeedChannel] = []
+        var seen = Set<String>()
+        // YouTube's built-in navigation rows also carry UC ids; they are not
+        // subscriptions and must not pollute the channel strip.
+        let builtin: Set<String> = [
+            "UC-9-kyTW8ZkZNDHQJ6FgpwQ",  // Music
+            "UC4R8DWoMoI7CAwX8_LjQHig",  // Live
+            "UCOpNcN46UbXVtpKMrmU4Abg",  // Gaming
+            "UCEgdi0XXI0ZXECEAMYoIWjQ",  // Movies & TV
+            "UC608a6SOvE1TPAgmK5JV6Ug",  // Sports (older id)
+            "UCsZqUoZWVwl1As3xLBhz6Qg"   // News
+        ]
+
+        func collect(_ value: Any) {
+            guard let dict = value as? [String: Any] else {
+                if let array = value as? [Any] { for child in array { collect(child) } }
+                return
+            }
+            // A guide entry is a subscribed channel when its browse endpoint
+            // carries a UC id. Skip the fixed navigation rows (Home/Shorts/…).
+            if let entry = dict["guideEntryRenderer"] as? [String: Any],
+               let cid = browseID(in: entry), !seen.contains(cid), !builtin.contains(cid) {
+                let name = text(entry["formattedTitle"])
+                if !name.isEmpty {
+                    seen.insert(cid)
+                    result.append(FeedChannel(id: cid, name: name,
+                                              avatarURL: thumbnailURL(entry["thumbnail"])))
+                }
+            }
+            for child in dict.values { collect(child) }
+        }
+        collect(json)
+        return result
+    }
+
+    private static func browseID(in value: Any?) -> String? {
+        guard let dict = value as? [String: Any] else { return nil }
+        if let nav = dict["navigationEndpoint"] as? [String: Any],
+           let browse = nav["browseEndpoint"] as? [String: Any],
+           let id = browse["browseId"] as? String,
+           id.hasPrefix("UC"), id.count == 24 { return id }
+        for child in dict.values {
+            if let found = browseID(in: child) { return found }
+        }
+        return nil
     }
 
     /// The channel shelf is paginated separately from the video grid. Follow
@@ -132,10 +197,11 @@ struct FeedChannel: Identifiable, Equatable {
                 seenIDs.insert(channel.id)
                 result.append(channel)
             }
-            if !found.isEmpty {
-                for next in Self.continuationTokens(in: more) where seenTokens.insert(next).inserted {
-                    queue.append(next)
-                }
+            // Always keep walking: a page can be a pure continuation wrapper
+            // with no channel cards of its own, and gating on `found` here
+            // used to break the chain before later channel pages arrived.
+            for next in Self.continuationTokens(in: more) where seenTokens.insert(next).inserted {
+                queue.append(next)
             }
         }
         return result
