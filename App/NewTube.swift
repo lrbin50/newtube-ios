@@ -1410,7 +1410,7 @@ struct LibraryView: View {
     /// A single horizontally scrollable row showing about three cards at once.
     private func horizontalCards<Content: View>(
         cardHeight: CGFloat,
-        @ViewBuilder content: (CGFloat) -> Content
+        @ViewBuilder content: @escaping (CGFloat) -> Content
     ) -> some View {
         GeometryReader { geo in
             // 16pt insets on both sides + two 12pt gaps between three cards.
