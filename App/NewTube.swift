@@ -1366,7 +1366,7 @@ struct LibraryView: View {
     private var playlistsShelf: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(L10n.tr("you.playlists")).font(.headline).padding(.horizontal, 16)
-            horizontalCards(cardHeight: 106) { width in
+            horizontalCards { width in
                 ForEach(visiblePlaylists) { playlist in
                     VStack(alignment: .leading, spacing: 6) {
                         ZStack(alignment: .bottomTrailing) {
@@ -1417,21 +1417,23 @@ struct LibraryView: View {
     }
 
     /// A single horizontally scrollable row showing about three cards at once.
+    /// Card width for the shelves: 16pt side insets + two 12pt gaps between
+    /// three visible cards. The row height follows its content, so the caption
+    /// always fits below the thumbnail instead of being clipped by a fixed
+    /// container height.
+    private var shelfCardWidth: CGFloat {
+        max(104, (UIScreen.main.bounds.width - 56) / 3)
+    }
+
     private func horizontalCards<Content: View>(
-        cardHeight: CGFloat,
         @ViewBuilder content: @escaping (CGFloat) -> Content
     ) -> some View {
-        GeometryReader { geo in
-            // 16pt insets on both sides + two 12pt gaps between three cards.
-            let width = max(104, (geo.size.width - 56) / 3)
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(alignment: .top, spacing: 12) { content(width) }
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 2)
-            }
-            .frame(height: cardHeight)
+        let width = shelfCardWidth
+        return ScrollView(.horizontal, showsIndicators: false) {
+            HStack(alignment: .top, spacing: 12) { content(width) }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 2)
         }
-        .frame(height: cardHeight)
     }
 
     /// History / Watch later shelf: one swipeable row instead of a wrapping grid.
@@ -1440,7 +1442,7 @@ struct LibraryView: View {
     private func shelf(title: String, videos: [Video], onRemove: ((Video) -> Void)? = nil) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(title).font(.headline).padding(.horizontal, 16)
-            horizontalCards(cardHeight: 104) { width in
+            horizontalCards { width in
                 ForEach(videos) { video in
                     VStack(alignment: .leading, spacing: 6) {
                         RemoteThumbnail(url: video.thumbnailURL)
