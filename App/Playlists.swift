@@ -76,6 +76,18 @@ struct YTPlaylist: Identifiable, Equatable {
         return json != nil
     }
 
+    /// Remove a video from a playlist through the same InnerTube playlist
+    /// editor. Only playlists owned by the signed-in account accept this;
+    /// YouTube rejects removals on other people's playlists.
+    func removeFromPlaylist(playlistId: String, videoId: String) async -> Bool {
+        guard let token = try? await Account.shared.validToken() else { return false }
+        var body = tvContext()
+        body["playlistId"] = playlistId
+        body["actions"] = [["action": "ACTION_REMOVE_VIDEO", "removedVideoId": videoId]]
+        let json = try? await post("browse/edit_playlist", body: body, token: token)
+        return json != nil
+    }
+
     private func post(_ endpoint: String, body: [String: Any], token: String) async throws -> [String: Any]? {
         guard let url = URL(string: "https://www.youtube.com/youtubei/v1/\(endpoint)?key=\(apiKey)&prettyPrint=false") else {
             return nil

@@ -277,10 +277,29 @@ struct SaveToPlaylistSheet: View {
 
 struct CommentsPanel: View {
     let videoId: String
+    let count: String?
     let onClose: () -> Void
 
     @ObservedObject private var store = CommentsStore.shared
     @State private var draft = ""
+    @State private var newestFirst = false
+
+    /// YouTube returns the first page already ranked by 最热门. Only the
+    /// 最新 tab reorders it — by approximate age parsed from the relative
+    /// timestamps YouTube sends, so no extra network request is needed.
+    private var visibleComments: [CommentItem] {
+        guard newestFirst else { return store.comments }
+        return store.comments.sorted {
+            CommentTime.ageSeconds($0.published) < CommentTime.ageSeconds($1.published)
+        }
+    }
+
+    private var titleText: String {
+        if let count, !count.isEmpty {
+            return String(format: L10n.tr("comments.countFormat", fallback: "%@ comments"), count)
+        }
+        return L10n.tr("comments.title", fallback: "Comments")
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -290,11 +309,9 @@ struct CommentsPanel: View {
 
             // Title row
             HStack {
-                Text(L10n.tr("comments.title", fallback: "Comments"))
+                Text(titleText)
                     .font(.headline).foregroundColor(.primary)
                 Spacer()
-                Image(systemName: "info.circle")
-                    .foregroundColor(.secondary)
                 Button(action: onClose) {
                     Image(systemName: "xmark")
                         .font(.system(size: 14, weight: .semibold))
@@ -305,16 +322,17 @@ struct CommentsPanel: View {
             }
             .padding(.horizontal, 16).padding(.vertical, 10)
 
-            // Guidelines notice
-            ZStack {
-                Rectangle().fill(Color.secondary.opacity(0.12))
-                (Text(L10n.tr("comments.guidelines", fallback: "Please follow the YouTube Community Guidelines when commenting. "))
-                    + Text(L10n.tr("comments.learnMore", fallback: "Learn more"))
-                    .bold()
-                    .foregroundColor(Color(UIColor.systemBlue)))
-                    .font(.caption).foregroundColor(.secondary)
+            // Sort tabs: red filled pill = selected, matching the Android app.
+            HStack(spacing: 8) {
+                sortTab(title: L10n.tr("comments.top", fallback: "Top"), selected: !newestFirst) {
+                    newestFirst = false
+                }
+                sortTab(title: L10n.tr("comments.newest", fallback: "Newest"), selected: newestFirst) {
+                    newestFirst = true
+                }
+                Spacer(minLength: 0)
             }
-            .frame(height: 30)
+            .padding(.horizontal, 16).padding(.bottom, 8)
 
             if store.loading {
                 VStack { Spinner(size: 34).padding(.top, 40) }
@@ -333,7 +351,7 @@ struct CommentsPanel: View {
                 Spacer()
             } else {
                 List {
-                    ForEach(store.comments) { comment in
+                    ForEach(visibleComments) { comment in
                         CommentRow(comment: comment)
                             .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
                     }
@@ -412,6 +430,20 @@ struct CommentsPanel: View {
                 Task { await store.load(videoId: videoId) }
             }
         }
+    }
+
+    private func sortTab(title: String, selected: Bool,
+                         action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundColor(selected ? .white : .primary)
+                .padding(.horizontal, 12).padding(.vertical, 6)
+                .background(Capsule().fill(selected
+                    ? Color(red: 0.94, green: 0.16, blue: 0.25)
+                    : Color.secondary.opacity(0.12)))
+        }
+        .buttonStyle(.plain)
     }
 }
 

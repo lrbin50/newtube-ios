@@ -495,8 +495,12 @@ enum FeedError: LocalizedError {
     /// Only titles we actually display are accepted, which keeps unrelated
     /// navigation items (sidebar, footer) out of the chip bar.
     private static func extractChips(_ json: [String: Any]) -> [FeedChip] {
-        let known = Set(defaultChips.map { $0.title })
         var found: [String: FeedChip] = [:]
+        // Titles that are navigation entries rather than feed categories —
+        // these carry a browseId but no feed `params`, so they rarely pass the
+        // guard below; keep the list as a belt-and-suspenders filter.
+        let excluded = Set(["Home", "Shorts", "Subscriptions", "You", "Library",
+                            "History", "Playlists", "Settings", "Trending", "Sign in"])
 
         func collect(_ value: Any, title: String?) {
             if let dict = value as? [String: Any] {
@@ -528,7 +532,8 @@ enum FeedError: LocalizedError {
                     }
                 }
                 if let e = endpoint, let params = e["params"] as? String, !params.isEmpty,
-                   let chipTitle = currentTitle, known.contains(chipTitle), found[chipTitle] == nil {
+                   let chipTitle = currentTitle, !chipTitle.isEmpty, chipTitle.count <= 40,
+                   !excluded.contains(chipTitle), found[chipTitle] == nil {
                     found[chipTitle] = FeedChip(title: chipTitle, params: params,
                                                 browseId: e["browseId"] as? String,
                                                 searchQuery: nil)
@@ -542,16 +547,32 @@ enum FeedError: LocalizedError {
         return Array(found.values)
     }
 
-    /// Keep the canonical display order and fill any chip the server omitted
-    /// with its public-search fallback, so the bar never changes shape.
+    /// Server categories come first in the order YouTube shipped them; the
+    /// built-in list is appended only for entries the server omitted, so new
+    /// rollout categories (Gaming, News, …) actually appear and each chip keeps
+    /// a public-search fallback when its params are missing.
     private static func mergeChips(_ remote: [FeedChip]) -> [FeedChip] {
-        let byTitle = Dictionary(uniqueKeysWithValues: remote.map { ($0.title, $0) })
-        return defaultChips.map { base in
-            guard let fresh = byTitle[base.title] else { return base }
-            return FeedChip(title: base.title, params: fresh.params,
-                            browseId: fresh.browseId,
-                            searchQuery: fresh.params == nil ? base.searchQuery : nil)
+        let fallbackByTitle = Dictionary(uniqueKeysWithValues: defaultChips.map { ($0.title, $0) })
+        var seen = Set<String>()
+        var result: [FeedChip] = []
+
+        func append(_ chip: FeedChip) {
+            guard seen.insert(chip.title).inserted else { return }
+            let query = chip.params == nil ? fallbackByTitle[chip.title]?.searchQuery : nil
+            result.append(FeedChip(title: chip.title, params: chip.params,
+                                   browseId: chip.browseId, searchQuery: query))
         }
+
+        // "All" must stay first — index 0 opens the personalized home feed.
+        // Take it from the server when present, otherwise seed it from defaults.
+        if let all = remote.first(where: { $0.title == "All" }) {
+            append(all)
+        } else if let all = fallbackByTitle["All"] {
+            append(all)
+        }
+        for chip in remote where chip.title != "All" { append(chip) }
+        for base in defaultChips { append(base) }
+        return result
     }
 
     // MARK: - Cache

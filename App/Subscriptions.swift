@@ -112,21 +112,30 @@ struct FeedChannel: Identifiable, Equatable {
     /// subscribed channel appears in the strip instead of only the first page.
     private func loadAllChannels(from json: [String: Any], initial: [FeedChannel]) async -> [FeedChannel] {
         var result = initial
-        var seen = Set<String>()
-        var queue = Self.continuationTokens(in: json).filter { seen.insert($0).inserted }
+        var seenIDs = Set(result.map { $0.id })
+        var seenTokens = Set<String>()
+        var queue = Self.continuationTokens(in: json).filter { seenTokens.insert($0).inserted }
         let token = try? await Account.shared.validToken()
         var requests = 0
-        while !queue.isEmpty, requests < 12 {
+        // The response mixes two independent paginated streams: the channel
+        // shelf and the video grid. Following every token blindly spent the
+        // budget on video pages (which carry no channels). Only continue a
+        // token when its response actually produced channel cards.
+        while !queue.isEmpty, requests < 24 {
             let continuation = queue.removeFirst()
             requests += 1
             guard let more = try? await post(endpoint: "browse",
                                              body: ["context": context(), "continuation": continuation],
                                              token: token) else { continue }
-            for channel in Self.extractChannels(more) {
-                if !result.contains(where: { $0.id == channel.id }) { result.append(channel) }
+            let found = Self.extractChannels(more)
+            for channel in found where !seenIDs.contains(channel.id) {
+                seenIDs.insert(channel.id)
+                result.append(channel)
             }
-            for next in Self.continuationTokens(in: more) where seen.insert(next).inserted {
-                queue.append(next)
+            if !found.isEmpty {
+                for next in Self.continuationTokens(in: more) where seenTokens.insert(next).inserted {
+                    queue.append(next)
+                }
             }
         }
         return result
@@ -248,6 +257,7 @@ struct FeedChannel: Identifiable, Equatable {
                 return
             }
 
+            // Classic channel renderer (ANDROID / older TV rollouts).
             if let renderer = dict["channelRenderer"] as? [String: Any],
                let cid = renderer["channelId"] as? String, cid.hasPrefix("UC") {
                 let name = text(renderer["title"])
@@ -256,25 +266,59 @@ struct FeedChannel: Identifiable, Equatable {
                                          avatarURL: thumbnailURL(renderer["thumbnail"])))
                 }
             }
+            // Grid channel renderer used by continuation pages.
+            if let renderer = dict["gridChannelRenderer"] as? [String: Any],
+               let cid = renderer["channelId"] as? String, cid.hasPrefix("UC") {
+                let name = text(renderer["title"])
+                if !name.isEmpty {
+                    remember(FeedChannel(id: cid, name: name,
+                                         avatarURL: thumbnailURL(renderer["thumbnail"])))
+                }
+            }
 
+            // Any node carrying a UC browse id is a channel candidate: newer
+            // TV responses hide the id in navigationEndpoint/lockup/browseId
+            // instead of the top-level contentId. Resolve the id from several
+            // shapes, then look for a nearby title/avatar.
             var cid: String?
             var name: String?
             var avatar: Any?
-            if let lockup = dict["lockupViewModel"] as? [String: Any],
-               let contentId = lockup["contentId"] as? String, contentId.hasPrefix("UC") {
-                cid = contentId
+            func browseID(_ value: Any?) -> String? {
+                guard let d = value as? [String: Any] else { return nil }
+                if let id = d["browseId"] as? String, id.hasPrefix("UC"), id.count == 24 { return id }
+                for child in d.values {
+                    if let found = browseID(child) { return found }
+                }
+                return nil
+            }
+
+            if let lockup = dict["lockupViewModel"] as? [String: Any] {
+                let type = lockup["contentType"] as? String ?? ""
+                let rawId = lockup["contentId"] as? String ?? ""
+                if rawId.hasPrefix("UC") {
+                    cid = rawId
+                } else if type.contains("CHANNEL") {
+                    cid = browseID(lockup)
+                }
                 let meta = (lockup["metadata"] as? [String: Any])?["lockupMetadataViewModel"] as? [String: Any]
                 name = text(meta?["title"])
                 avatar = lockup["image"]
-            } else if let tile = dict["tileRenderer"] as? [String: Any],
-                      let contentId = tile["contentId"] as? String, contentId.hasPrefix("UC") {
+                    ?? meta?["image"]
+                    ?? (meta?["metadata"] as? [String: Any])?["avatar"]
+            } else if let tile = dict["tileRenderer"] as? [String: Any] {
                 let type = tile["contentType"] as? String ?? ""
-                if type.contains("CHANNEL") {
-                    cid = contentId
-                    let meta = (tile["metadata"] as? [String: Any])?["tileMetadataRenderer"] as? [String: Any]
-                    name = text(meta?["title"])
-                    avatar = tile["image"]
+                let rawId = tile["contentId"] as? String ?? ""
+                if rawId.hasPrefix("UC") {
+                    cid = rawId
+                } else if type.contains("CHANNEL") {
+                    cid = browseID(tile)
                 }
+                let meta = (tile["metadata"] as? [String: Any])?["tileMetadataRenderer"] as? [String: Any]
+                name = text(meta?["title"])
+                avatar = tile["image"]
+            } else if let renderer = dict["channelThumbnailWithLinkRenderer"] as? [String: Any] {
+                cid = browseID(renderer)
+                avatar = renderer["thumbnail"]
             }
             if let cid, let name, !name.isEmpty {
                 remember(FeedChannel(id: cid, name: name, avatarURL: thumbnailURL(avatar)))

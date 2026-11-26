@@ -19,6 +19,42 @@ struct CommentItem: Identifiable {
     var isCreator: Bool
 }
 
+/// Rough age in seconds parsed from YouTube's relative timestamps (both the
+/// English client strings like "7y ago (edited)" and the Chinese ones like
+/// "6天前"). Used only to order the locally loaded page under 最新; unknown
+/// formats sort last instead of jumping to the top.
+enum CommentTime {
+    static func ageSeconds(_ raw: String) -> Double {
+        let text = raw.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        if text.isEmpty { return Double.greatestFiniteMagnitude }
+        if text.contains("just now") || text.contains("刚刚") || text.contains("今天") { return 0 }
+        if text.contains("昨天") || text.contains("yesterday") { return 86_400 }
+        // "(edited)" is decoration; strip it before looking for number + unit.
+        let clean = text.replacingOccurrences(of: "(edited)", with: "")
+                        .replacingOccurrences(of: "（已编辑）", with: "")
+        var amount = 1.0
+        if let match = clean.range(of: "[0-9]+(?:\\.[0-9]+)?", options: .regularExpression),
+           let value = Double(String(clean[match])) {
+            amount = value
+        }
+        // Longest tokens first so "month" wins over "m", "minutes" over "min".
+        let units: [(String, Double)] = [
+            ("year", 365 * 86_400), ("years", 365 * 86_400), ("年", 365 * 86_400),
+            ("month", 30 * 86_400), ("months", 30 * 86_400), ("个月", 30 * 86_400), ("mo", 30 * 86_400),
+            ("week", 7 * 86_400), ("weeks", 7 * 86_400), ("星期", 7 * 86_400), ("周", 7 * 86_400),
+            ("day", 86_400), ("days", 86_400), ("天", 86_400), ("昨日", 86_400),
+            ("hour", 3_600), ("hours", 3_600), ("小时", 3_600), ("hr", 3_600),
+            ("minute", 60), ("minutes", 60), ("分钟", 60), ("min", 60),
+            ("second", 1), ("seconds", 1), ("秒", 1),
+            ("y", 365 * 86_400), ("w", 7 * 86_400), ("d", 86_400), ("h", 3_600), ("m", 60), ("s", 1)
+        ]
+        for (token, multiplier) in units where clean.contains(token) {
+            return amount * multiplier
+        }
+        return Double.greatestFiniteMagnitude
+    }
+}
+
 @MainActor
 final class CommentsStore: ObservableObject {
     static let shared = CommentsStore()
@@ -77,6 +113,11 @@ final class CommentsStore: ObservableObject {
            let visitor = context["visitorData"] as? String {
             visitorData = visitor
         }
+        // The composer's createCommentParams sometimes live in the first
+        // `next` response rather than the paginated comment page. Capture
+        // them here too so posting never fails just because the params were
+        // on a different response.
+        if let params = Self.createParams(in: first) { createParams = params }
         guard let token = Self.sectionToken(in: first) else {
             // Some videos have comments disabled; treat an empty section as done.
             if requestSequence == sequence && comments.isEmpty {
@@ -134,9 +175,16 @@ final class CommentsStore: ObservableObject {
                 ],
                 authorization: token
             ))
-            guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+            // `http` is not bound in a guard-else block; read the status
+            // separately so the 403 hint can be shown reliably.
+            let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
+            guard statusCode == 200 else {
                 let detail = Self.apiMessage(in: data)
-                postError = detail ?? L10n.tr("comments.postFailed", fallback: "Couldn't post comment")
+                if statusCode == 403 {
+                    postError = detail ?? L10n.tr("comments.reauthHint", fallback: "评论被拒绝，请在设置里退出并重新登录后重试")
+                } else {
+                    postError = detail ?? L10n.tr("comments.postFailed", fallback: "Couldn't post comment")
+                }
                 return false
             }
             // Insert the accepted comment locally instead of reloading the
@@ -164,8 +212,10 @@ final class CommentsStore: ObservableObject {
     // MARK: internals
 
     private var clientContext: [String: Any] {
-        ["client": ["clientName": "ANDROID", "clientVersion": "20.10.38",
+        var ctx: [String: Any] = ["client": ["clientName": "ANDROID", "clientVersion": "20.10.38",
                     "androidSdkVersion": 30, "hl": "en", "gl": "US"]]
+        if Account.shared.isSignedIn { ctx["user"] = ["isSignedIn": true] }
+        return ctx
     }
 
     private func fetchPage(token: String, sequence: Int) async {
@@ -200,7 +250,11 @@ final class CommentsStore: ObservableObject {
     }
 
     private func post(_ endpoint: String, body: [String: Any]) async throws -> [String: Any]? {
-        let (data, response) = try await LegacyNetwork.data(for: makeRequest(endpoint: endpoint, body: body, authorization: nil))
+        // createCommentParams must be issued for the signed-in session: an
+        // anonymous `next` yields a guest token that the server rejects once
+        // we post with the OAuth bearer.
+        let auth = try? await Account.shared.validToken()
+        let (data, response) = try await LegacyNetwork.data(for: makeRequest(endpoint: endpoint, body: body, authorization: auth))
         guard let http = response as? HTTPURLResponse, http.statusCode == 200,
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         else { return nil }

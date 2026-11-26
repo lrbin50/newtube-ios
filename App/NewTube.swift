@@ -245,10 +245,22 @@ struct BrowseView: View {
     @State private var showSignIn = false
     @State private var selectedChip = 0
 
-    private let chipKeys = ["chip.all", "chip.music", "chip.podcasts", "chip.mixes", "chip.live",
-                            "chip.travel", "chip.recent", "chip.watched", "chip.newToYou"]
+    /// Chips come from the server's home response (`feed.chips`), not a fixed
+    /// list, so categories YouTube actually ships (Gaming, News, Sports…) show
+    /// up. English titles from InnerTube are mapped to our localized keys;
+    /// unknown/new titles are displayed verbatim.
+    private var chips: [FeedChip] { feed.chips }
 
-    private var chips: [String] { chipKeys.map { L10n.tr($0) } }
+    private func chipTitle(_ chip: FeedChip) -> String {
+        let map: [String: String] = [
+            "All": "chip.all", "Music": "chip.music", "Podcasts": "chip.podcasts",
+            "Mixes": "chip.mixes", "Live": "chip.live", "Travel": "chip.travel",
+            "Recently uploaded": "chip.recent", "Watched": "chip.watched",
+            "New to you": "chip.newToYou"
+        ]
+        if let key = map[chip.title] { return L10n.tr(key) }
+        return chip.title
+    }
 
     /// Every chip must actually load something. Category chips use the params
     /// harvested from the latest home response; when absent, Feed falls back
@@ -259,8 +271,8 @@ struct BrowseView: View {
             Task { await feed.load(.home) }
             return
         }
-        let chip = feed.chips.indices.contains(index) ? feed.chips[index] : Feed.defaultChips[index]
-        Task { await feed.load(.category(chip)) }
+        guard feed.chips.indices.contains(index) else { return }
+        Task { await feed.load(.category(feed.chips[index])) }
     }
 
     var body: some View {
@@ -366,9 +378,9 @@ struct BrowseView: View {
     private var chipsBar: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
-                ForEach(Array(chips.enumerated()), id: \.offset) { index, name in
+                ForEach(Array(chips.enumerated()), id: \.offset) { index, chip in
                     Button { selectChip(index) } label: {
-                        Text(name).font(.system(size: 14, weight: .medium))
+                        Text(chipTitle(chip)).font(.system(size: 14, weight: .medium))
                             .padding(.horizontal, 14).padding(.vertical, 7)
                             .background(
                                 Capsule().fill(selectedChip == index
@@ -550,6 +562,7 @@ struct FullScreenPlayerView: View {
     @EnvironmentObject var library: Library
     @EnvironmentObject var tv: Television
     @ObservedObject private var avatars = ChannelAvatarStore.shared
+    @ObservedObject private var comments = CommentsStore.shared
     @State private var webPlayer: Video?
     @State private var meta = VideoMeta()
     @State private var related: [Video] = []
@@ -622,7 +635,7 @@ struct FullScreenPlayerView: View {
                             playerControls(landscape: false)
                         }
                         if showComments {
-                            CommentsPanel(videoId: video.id) {
+                            CommentsPanel(videoId: video.id, count: meta.comments) {
                                 withAnimation(.easeIn(duration: 0.2)) { showComments = false }
                             }
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -651,7 +664,7 @@ struct FullScreenPlayerView: View {
                 if showComments && landscape {
                     VStack(spacing: 0) {
                         Spacer(minLength: 0)
-                        CommentsPanel(videoId: video.id) {
+                        CommentsPanel(videoId: video.id, count: meta.comments) {
                             withAnimation(.easeIn(duration: 0.2)) { showComments = false }
                         }
                         .frame(height: geo.size.height * 0.72)
@@ -853,6 +866,13 @@ struct FullScreenPlayerView: View {
         }
     }
 
+    private var commentCountText: String {
+        if let count = meta.comments, !count.isEmpty {
+            return String(format: L10n.tr("comments.countFormat", fallback: "%@ comments"), count)
+        }
+        return L10n.tr("common.comments")
+    }
+
     private var detail: some View {
         VStack(alignment: .leading, spacing: 14) {
             // Title + expandable description row.
@@ -936,21 +956,61 @@ struct FullScreenPlayerView: View {
                 }
             }
 
-            // Comments row opens the bottom-half comments panel in place.
+            // Comments preview: count + the top comment, as on Android.
+            // Tapping anywhere opens the full panel (which reuses this page's
+            // already loaded comments instead of fetching them again).
             Button {
                 withAnimation(.easeOut(duration: 0.25)) { showComments = true }
             } label: {
-                HStack {
-                    Image(systemName: "bubble.left").foregroundColor(.primary)
-                    Text(L10n.tr("common.comments")).foregroundColor(.primary)
-                    if let count = meta.comments {
-                        Text(count).foregroundColor(.secondary)
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack {
+                        Text(commentCountText)
+                            .font(.headline).foregroundColor(.primary)
+                        Spacer()
+                        Image(systemName: "chevron.right")
+                            .font(.caption).foregroundColor(.secondary)
                     }
-                    Spacer()
-                    Image(systemName: "chevron.right").foregroundColor(.secondary)
+                    if let top = comments.comments.first {
+                        HStack(alignment: .top, spacing: 10) {
+                            Group {
+                                if let url = top.avatar {
+                                    RemoteThumbnail(url: url)
+                                } else {
+                                    Circle().fill(Color.accentColor.opacity(0.2))
+                                        .overlay(Text(String(top.author.prefix(1)).uppercased())
+                                            .font(.caption.bold()).foregroundColor(.accentColor))
+                                }
+                            }
+                            .frame(width: 30, height: 30).clipShape(Circle())
+                            VStack(alignment: .leading, spacing: 4) {
+                                HStack(spacing: 4) {
+                                    Text(top.author).font(.caption.bold()).foregroundColor(.primary)
+                                    Text("· \(top.published)")
+                                        .font(.caption2).foregroundColor(.secondary)
+                                }
+                                Text(top.text)
+                                    .font(.subheadline).foregroundColor(.primary)
+                                    .lineLimit(2)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                if !top.likes.isEmpty {
+                                    HStack(spacing: 4) {
+                                        Image(systemName: "hand.thumbsup")
+                                            .font(.caption2).foregroundColor(.secondary)
+                                        Text(top.likes).font(.caption2).foregroundColor(.secondary)
+                                    }
+                                }
+                            }
+                        }
+                        .padding(10)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Color.secondary.opacity(0.1))
+                        .cornerRadius(10)
+                    }
                 }
-                .padding().background(Color.secondary.opacity(0.1)).cornerRadius(10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
 
             // Up next
             if !related.isEmpty {
@@ -1018,6 +1078,11 @@ struct FullScreenPlayerView: View {
     private func load() {
         guard !didLoadMeta else { return }
         didLoadMeta = true
+        // The preview card needs one comment page. Fetch it off the playback
+        // critical path; the panel then reuses it with no second request.
+        if comments.loadedVideoId != video.id {
+            Task(priority: .utility) { await comments.load(videoId: video.id) }
+        }
         Task {
             // Run both requests concurrently instead of one after the other.
             async let loaded = Meta.load(video)
@@ -1163,6 +1228,9 @@ struct LibraryView: View {
         NavigationView {
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
+                    // Breathing room below the oversized 54pt nav-bar avatar so
+                    // the first shelf title does not sit flush against it.
+                    Color.clear.frame(height: 22)
                     // The grey account-switcher strip (Creator / Google Account /
                     // Incognito / Share settings) was removed; the avatar and
                     // account actions remain in the navigation bar above.
@@ -1407,8 +1475,11 @@ struct LibraryView: View {
                     }
                     .frame(width: width, alignment: .leading)
                     .contentShape(Rectangle())
-                    .onTapGesture { openPlaylistID = playlist.id }
-                    .onLongPressGesture(minimumDuration: 0.5) { pendingPlaylistRemoval = playlist }
+                    .gesture(
+                        LongPressGesture(minimumDuration: 0.4)
+                            .onEnded { _ in pendingPlaylistRemoval = playlist }
+                            .exclusively(before: TapGesture().onEnded { _ in openPlaylistID = playlist.id })
+                    )
                     .background(
                         NavigationLink(
                             destination: PlaylistDetailView(playlist: playlist),
@@ -1462,8 +1533,11 @@ struct LibraryView: View {
                     }
                     .frame(width: width, alignment: .leading)
                     .contentShape(Rectangle())
-                    .onTapGesture { playback.open(video) }
-                    .onLongPressGesture(minimumDuration: 0.5) { onRemove?(video) }
+                    .gesture(
+                        LongPressGesture(minimumDuration: 0.4)
+                            .onEnded { _ in onRemove?(video) }
+                            .exclusively(before: TapGesture().onEnded { _ in playback.open(video) })
+                    )
                 }
             }
         }.padding(.bottom, 14)
@@ -1688,6 +1762,9 @@ struct PlaylistDetailView: View {
                                                ? L10n.tr("you.removeSaved") : L10n.tr("card.watchLater")) {
                                             library.bookmark(video)
                                         }
+                                        Button(L10n.tr("playlist.remove", fallback: "从播放列表移除")) {
+                                            removeVideo(video)
+                                        }
                                         ShareButton(url: video.watchURL)
                                     }
                                 }
@@ -1733,6 +1810,9 @@ struct PlaylistDetailView: View {
                         library.bookmark(video)
                     },
                     .default(Text(L10n.tr("common.share"))) { presentShareSheet(url: video.watchURL) },
+                    .destructive(Text(L10n.tr("playlist.remove", fallback: "从播放列表移除"))) {
+                        removeVideo(video)
+                    },
                     .cancel()
                 ]
             )
@@ -1742,6 +1822,21 @@ struct PlaylistDetailView: View {
             Task {
                 videos = await PlaylistsStore.shared.videos(of: playlist)
                 loading = false
+            }
+        }
+    }
+
+    /// Remove a video from this playlist on YouTube. Only the owner's own
+    /// playlists accept the edit; otherwise show a clear failure message.
+    private func removeVideo(_ video: Video) {
+        Task {
+            let ok = await PlaylistsStore.shared.removeFromPlaylist(
+                playlistId: playlist.id, videoId: video.id)
+            if ok {
+                videos.removeAll { $0.id == video.id }
+            } else {
+                playback.message = L10n.tr("playlist.removeFailed",
+                    fallback: "无法从播放列表移除：请确认是自己的播放列表，或退出重新登录后重试")
             }
         }
     }
