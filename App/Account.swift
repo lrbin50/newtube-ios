@@ -272,7 +272,10 @@ enum AccountError: LocalizedError {
 
     private let deviceCodeURL = "https://www.youtube.com/o/oauth2/device/code"
     private let tokenURL = "https://www.youtube.com/o/oauth2/token"
-    private let scope = "http://gdata.youtube.com https://www.googleapis.com/auth/youtube-paid-content"
+    // youtube.force-ssl is required to POST comments / replies and to like
+    // videos. Without it a valid token still gets 403 from
+    // /comment/create_comment, which looks to the user like "cannot comment".
+    private let scope = "http://gdata.youtube.com https://www.googleapis.com/auth/youtube-paid-content https://www.googleapis.com/auth/youtube.force-ssl"
 
     // A TV user-agent is REQUIRED: with a desktop/default UA, youtube.com/tv
     // serves a short "you are being redirected" stub with no base-js, so the

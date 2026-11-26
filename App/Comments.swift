@@ -37,13 +37,20 @@ final class CommentsStore: ObservableObject {
     private var videoId: String?
     private var nextPage: String?
     private var createParams: String?
+    private var visitorData: String?
     private var requestSequence = 0
+
+    /// The video whose comments are currently shown. The panel's `onAppear`
+    /// uses this to avoid reloading (and flashing a spinner) every time the
+    /// keyboard moves the layout or the view re-appears.
+    private(set) var loadedVideoId: String?
 
     private let apiKey = "AIzaSyA8eiZmM1FaDVjRy-df2KTyQ_vz_yYM39w"
     private let agent = "com.google.android.youtube/20.10.38 (Linux; U; Android 11) gzip"
 
     func load(videoId: String) async {
         self.videoId = videoId
+        loadedVideoId = videoId
         comments = []
         error = nil
         postError = nil
@@ -62,6 +69,13 @@ final class CommentsStore: ObservableObject {
         ]) else {
             if requestSequence == sequence { error = L10n.tr("comments.failed", fallback: "Couldn't load comments") }
             return
+        }
+        // The comment endpoint validates the poster's session against the
+        // visitorData that produced createCommentParams, so keep it with the
+        // params instead of generating a fresh (mismatched) one at post time.
+        if let context = first["responseContext"] as? [String: Any],
+           let visitor = context["visitorData"] as? String {
+            visitorData = visitor
         }
         guard let token = Self.sectionToken(in: first) else {
             // Some videos have comments disabled; treat an empty section as done.
@@ -82,41 +96,68 @@ final class CommentsStore: ObservableObject {
     }
 
     /// Post a top-level comment through the account's OAuth token.
-    func post(_ text: String) async {
+    /// - Returns: true only when the server accepted the comment. The caller
+    ///   keeps the draft text on false so nothing looks like it vanished.
+    @discardableResult
+    func post(_ text: String) async -> Bool {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
+        guard !trimmed.isEmpty else { return false }
         postError = nil
         guard Account.shared.isSignedIn else {
             postError = L10n.tr("comments.signInHint", fallback: "Sign in to join the conversation")
-            return
+            return false
         }
         guard let params = createParams, let id = videoId else {
             postError = L10n.tr("comments.postFailed", fallback: "Couldn't post comment")
-            return
+            return false
         }
         sending = true
         defer { sending = false }
         do {
             let token = try await Account.shared.validToken()
-            let (_, response) = try await LegacyNetwork.data(for: makeRequest(
+            // A signed-in context plus the visitorData that issued the
+            // createCommentParams is required; an anonymous context makes the
+            // server reject a perfectly valid token (403 PERMISSION_DENIED).
+            var ctx = clientContext
+            ctx["user"] = ["isSignedIn": true]
+            if let visitor = visitorData,
+               var client = ctx["client"] as? [String: Any] {
+                client["visitorData"] = visitor
+                ctx["client"] = client
+            }
+            let (data, response) = try await LegacyNetwork.data(for: makeRequest(
                 endpoint: "comment/create_comment",
                 body: [
-                    "context": clientContext,
+                    "context": ctx,
                     "commentText": trimmed,
                     "createCommentParams": params
                 ],
                 authorization: token
             ))
             guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
-                postError = L10n.tr("comments.postFailed", fallback: "Couldn't post comment")
-                return
+                let detail = Self.apiMessage(in: data)
+                postError = detail ?? L10n.tr("comments.postFailed", fallback: "Couldn't post comment")
+                return false
+            }
+            // Insert the accepted comment locally instead of reloading the
+            // whole thread. A reload clears the list and shows a spinner,
+            // which reads as "it bounced back and nothing was posted".
+            let mine = CommentItem(
+                id: "local-\(UUID().uuidString)",
+                author: Account.shared.accountName ?? L10n.tr("you.title", fallback: "You"),
+                avatar: Account.shared.avatarURL,
+                text: trimmed,
+                published: L10n.tr("comments.justNow", fallback: "Just now"),
+                likes: "", replyCount: "", isCreator: false
+            )
+            if !comments.contains(where: { $0.text == trimmed && $0.id.hasPrefix("local-") }) {
+                comments.insert(mine, at: 0)
             }
             justPosted = true
-            // Refresh so the new comment (and its real position) shows up.
-            await load(videoId: id)
-            justPosted = false
+            return true
         } catch {
             postError = L10n.tr("comments.postFailed", fallback: "Couldn't post comment")
+            return false
         }
     }
 
@@ -140,6 +181,12 @@ final class CommentsStore: ObservableObject {
         let page = Self.parse(json)
         let next = Self.nextToken(in: json)
         let params = Self.createParams(in: json)
+        // This response issues createCommentParams, so its visitorData is the
+        // one the server expects alongside them when posting.
+        if let context = json["responseContext"] as? [String: Any],
+           let visitor = context["visitorData"] as? String {
+            visitorData = visitor
+        }
         guard requestSequence == sequence else { return }
         // Comments arrive as entity payloads in display order; drop duplicates
         // when refreshing after posting.
@@ -173,6 +220,17 @@ final class CommentsStore: ObservableObject {
     }
 
     // MARK: parsing
+
+    /// Surface YouTube's own error message (e.g. "Comment failed to post." or
+    /// an auth-scope hint) instead of a generic failure, so a blocked comment
+    /// is diagnosable rather than looking like the button did nothing.
+    private static func apiMessage(in data: Data) -> String? {
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let error = json["error"] as? [String: Any],
+              let message = error["message"] as? String, !message.isEmpty
+        else { return nil }
+        return message
+    }
 
     /// The reload token for the comment section lives inside the engagement
     /// panel whose identifier is "comment-item-section".

@@ -628,6 +628,15 @@ struct FullScreenPlayerView: View {
                     .zIndex(20)
                     .transition(.opacity)
                 }
+
+                // Save-to-playlist: compact bottom card over a tap-away dim
+                // layer, keeping the player visible while choosing.
+                if activeSheet == .save {
+                    SaveToPlaylistSheet(video: video) { activeSheet = nil }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .zIndex(30)
+                        .transition(.opacity)
+                }
             }
         }
         // Defer detail/network-heavy work until the stream is ready, so it does
@@ -648,11 +657,6 @@ struct FullScreenPlayerView: View {
             if playing { scheduleControlsHide() } else { revealControls() }
         }
         .sheet(item: $webPlayer) { video in WebPlayer(url: video.watchURL).ignoresSafeArea() }
-        .sheet(item: $activeSheet) { sheet in
-            switch sheet {
-            case .save: SaveToPlaylistSheet(video: video)
-            }
-        }
         .sheet(isPresented: $showChannel) {
             ChannelProfileView(
                 channelID: meta.channelID,

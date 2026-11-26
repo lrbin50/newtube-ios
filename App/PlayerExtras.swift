@@ -137,81 +137,102 @@ struct MiniPlayerView: View {
 }
 
 /// Shown when 保存 is tapped: pick which playlist the video goes into.
-/// Lists the account's real playlists (from InnerTube) plus Watch later;
-/// adding is performed through the InnerTube playlist editor.
+/// Compact "save to playlist" menu. Presents as a small bottom card over a
+/// tap-away dim layer instead of a full-screen NavigationView sheet, so the
+/// player stays visible while choosing.
 struct SaveToPlaylistSheet: View {
     let video: Video
+    let onDismiss: () -> Void
     @ObservedObject private var playlists = PlaylistsStore.shared
-    @Environment(\.presentationMode) private var presentation
     @State private var workingId: String?
     @State private var doneId: String?
     @State private var failed = false
 
     var body: some View {
-        NavigationView {
-            VStack(spacing: 0) {
-                if playlists.playlists.isEmpty && playlists.loading {
-                    VStack { Spinner(size: 36).padding(.top, 40) }
-                    Spacer()
-                } else if playlists.playlists.isEmpty {
-                    VStack(spacing: 10) {
-                        Image(systemName: "list.bullet.rectangle")
-                            .font(.system(size: 34)).foregroundColor(.secondary)
-                        Text(L10n.tr("you.playlists")).font(.headline)
-                        Text(L10n.tr("player.saveTo.empty", fallback: "Sign in to see your playlists."))
-                            .font(.caption).foregroundColor(.secondary)
-                    }.padding(.top, 50)
-                    Spacer()
-                } else {
-                    List(sheetEntries) { playlist in
-                        Button {
-                            save(to: playlist)
-                        } label: {
-                            HStack(spacing: 10) {
-                                Group {
-                                    if let url = playlist.thumbnail {
-                                        RemoteThumbnail(url: url)
+        VStack(spacing: 0) {
+            Spacer(minLength: 0)
+            card
+                .padding(.horizontal, 14)
+                .padding(.bottom, 16)
+        }
+        .background(Color.black.opacity(0.35)
+                        .onTapGesture(perform: onDismiss))
+        .onAppear { Task { await playlists.load() } }
+    }
+
+    private var card: some View {
+        VStack(spacing: 0) {
+            // Drag handle
+            Capsule().fill(Color.secondary.opacity(0.4))
+                .frame(width: 36, height: 4).padding(.top, 8)
+
+            // Title row
+            HStack {
+                Text(L10n.tr("player.saveTo")).font(.headline).foregroundColor(.primary)
+                Spacer()
+                Button(action: onDismiss) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundColor(.primary)
+                        .padding(6)
+                        .background(Circle().fill(Color.secondary.opacity(0.15)))
+                }
+            }
+            .padding(.horizontal, 16).padding(.vertical, 10)
+
+            if playlists.playlists.isEmpty && playlists.loading {
+                HStack { Spinner(size: 22) }.frame(height: 56)
+            } else if playlists.playlists.isEmpty {
+                VStack(spacing: 6) {
+                    Image(systemName: "list.bullet.rectangle")
+                        .font(.system(size: 26)).foregroundColor(.secondary)
+                    Text(L10n.tr("player.saveTo.empty", fallback: "Sign in to see your playlists."))
+                        .font(.caption).foregroundColor(.secondary)
+                }.padding(.vertical, 14)
+            } else {
+                ScrollView {
+                    VStack(spacing: 0) {
+                        ForEach(sheetEntries) { playlist in
+                            Button { save(to: playlist) } label: {
+                                HStack(spacing: 10) {
+                                    Group {
+                                        if let url = playlist.thumbnail {
+                                            RemoteThumbnail(url: url)
+                                        } else {
+                                            Rectangle().fill(Color.secondary.opacity(0.15))
+                                                .overlay(Image(systemName: "clock").font(.caption)
+                                                            .foregroundColor(.secondary))
+                                        }
+                                    }
+                                    .frame(width: 40, height: 26).clipped().cornerRadius(4)
+                                    Text(playlist.title)
+                                        .font(.subheadline).foregroundColor(.primary).lineLimit(1)
+                                    Spacer(minLength: 4)
+                                    if workingId == playlist.id {
+                                        Spinner(size: 16)
+                                    } else if doneId == playlist.id {
+                                        Image(systemName: "checkmark.circle.fill").foregroundColor(.green)
                                     } else {
-                                        Rectangle().fill(Color.secondary.opacity(0.15))
+                                        Image(systemName: "plus").font(.caption).foregroundColor(.secondary)
                                     }
                                 }
-                                .frame(width: 70, height: 40).clipped().cornerRadius(5)
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(playlist.title)
-                                        .font(.subheadline).foregroundColor(.primary)
-                                        .lineLimit(1)
-                                    Text(L10n.tr("you.private.playlist"))
-                                        .font(.caption2).foregroundColor(.secondary)
-                                }
-                                Spacer()
-                                if workingId == playlist.id {
-                                    Spinner(size: 16)
-                                } else if doneId == playlist.id {
-                                    Image(systemName: "checkmark.circle.fill")
-                                        .foregroundColor(.green)
-                                }
+                                .padding(.vertical, 9).padding(.horizontal, 16)
+                                .contentShape(Rectangle())
                             }
+                            .buttonStyle(.plain)
+                            Divider().padding(.leading, 66)
                         }
-                        .buttonStyle(.plain)
                     }
-                    .listStyle(.plain)
                 }
-                if failed {
-                    Text(L10n.tr("player.saveTo.failed", fallback: "Couldn't add to this playlist."))
-                        .font(.caption).foregroundColor(.red)
-                        .padding(.vertical, 8)
-                }
+                .frame(maxHeight: 260)
             }
-            .navigationTitle(L10n.tr("player.saveTo"))
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .navigationBarLeading) {
-                    Button(L10n.tr("common.ok")) { presentation.wrappedValue.dismiss() }
-                }
+            if failed {
+                Text(L10n.tr("player.saveTo.failed", fallback: "Couldn't add to this playlist."))
+                    .font(.caption).foregroundColor(.red).padding(.vertical, 6)
             }
-            .onAppear { Task { await playlists.load() } }
         }
-        .navigationViewStyle(StackNavigationViewStyle())
+        .background(Color(UIColor.systemBackground))
+        .cornerRadius(16)
     }
 
     /// Watch later first (InnerTube's fixed `WL` id), then account playlists.
@@ -233,7 +254,7 @@ struct SaveToPlaylistSheet: View {
                 doneId = playlist.id
                 // Brief confirmation, then close.
                 try? await Task.sleep(nanoseconds: 900_000_000)
-                presentation.wrappedValue.dismiss()
+                onDismiss()
             } else {
                 failed = true
             }
@@ -349,28 +370,41 @@ struct CommentsPanel: View {
                 } else {
                     Button {
                         let text = draft
-                        draft = ""
+                        // Keep the text until the server confirms. Clearing it
+                        // up front and restoring on failure made the box jump
+                        // and look like the comment bounced back.
                         Task {
-                            await store.post(text)
-                            if store.postError != nil { draft = text }
+                            if await store.post(text) { draft = "" }
                         }
                     } label: {
                         Image(systemName: "arrow.up.circle.fill")
                             .font(.system(size: 26))
                             .foregroundColor(draft.isEmpty ? Color.secondary : Color(UIColor.systemBlue))
                     }
-                    .disabled(draft.isEmpty)
+                    .disabled(draft.isEmpty || store.sending)
                 }
             }
             .padding(.horizontal, 16).padding(.vertical, 8)
             if let failure = store.postError {
-                Text(failure).font(.caption2).foregroundColor(.red)
-                    .frame(maxWidth: .infinity).padding(.bottom, 4)
+                HStack(spacing: 6) {
+                    Image(systemName: "exclamationmark.circle.fill")
+                        .font(.caption).foregroundColor(.red)
+                    Text(failure).font(.caption).foregroundColor(.red)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 16).padding(.bottom, 6)
             }
         }
         .background(Color(UIColor.systemBackground).edgesIgnoringSafeArea(.bottom))
         .cornerRadius(16)
-        .onAppear { Task { await store.load(videoId: videoId) } }
+        .onAppear {
+            // Only fetch when switching video. Re-appearing because the
+            // keyboard moved the layout must not clear the list and spin.
+            if store.loadedVideoId != videoId {
+                Task { await store.load(videoId: videoId) }
+            }
+        }
     }
 }
 
