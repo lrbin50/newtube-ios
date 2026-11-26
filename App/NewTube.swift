@@ -636,10 +636,16 @@ struct FullScreenPlayerView: View {
                         }
                         if showComments {
                             CommentsPanel(videoId: video.id, count: commentCountValue) {
-                                withAnimation(.easeIn(duration: 0.2)) { showComments = false }
+                                showComments = false
                             }
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
-                            .transition(.move(edge: .bottom))
+                            // No .move transition here. The panel appears in the
+                            // same slot as `detail` via an if/else, and the
+                            // comments store publishes `loading` as soon as the
+                            // panel's onAppear fires. On iOS 14 that body
+                            // recompute interrupts the slide-in and the panel
+                            // snaps back down ("flashes then returns"). Showing
+                            // it directly keeps it stable.
                         } else {
                             ScrollView { detail }
                         }
@@ -665,12 +671,13 @@ struct FullScreenPlayerView: View {
                     VStack(spacing: 0) {
                         Spacer(minLength: 0)
                         CommentsPanel(videoId: video.id, count: commentCountValue) {
-                            withAnimation(.easeIn(duration: 0.2)) { showComments = false }
+                            showComments = false
                         }
                         .frame(height: geo.size.height * 0.72)
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .transition(.move(edge: .bottom))
+                    // Same reason as portrait: no slide transition, so the
+                    // comments store's publish during appear cannot bounce it.
                     .zIndex(10)
                 }
 
@@ -969,7 +976,11 @@ struct FullScreenPlayerView: View {
             // Tapping anywhere opens the full panel (which reuses this page's
             // already loaded comments instead of fetching them again).
             Button {
-                withAnimation(.easeOut(duration: 0.25)) { showComments = true }
+                // Open without animating showComments. The panel's onAppear
+                // publishes loading immediately; if that publish lands while a
+                // withAnimation transition is running, iOS 14 aborts the
+                // transition and the panel flashes back down.
+                showComments = true
             } label: {
                 VStack(alignment: .leading, spacing: 10) {
                     HStack {
