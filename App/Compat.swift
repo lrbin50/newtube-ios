@@ -160,7 +160,7 @@ struct RemoteThumbnail: View {
 /// UIImageView that reports no intrinsic size, so SwiftUI's `.frame` +
 /// `.aspectRatio` fully control its bounds inside a LazyVGrid cell. Without
 /// this, a loaded image's natural size inflates the cell and overlaps rows.
-private final class GridThumbnailImageView: UIImageView {
+final class GridThumbnailImageView: UIImageView {
     override var intrinsicContentSize: CGSize {
         CGSize(width: UIView.noIntrinsicMetric, height: UIView.noIntrinsicMetric)
     }
