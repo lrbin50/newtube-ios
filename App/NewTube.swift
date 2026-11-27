@@ -422,10 +422,12 @@ struct FeedCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             ZStack(alignment: .bottomTrailing) {
-                RemoteThumbnail(url: video.thumbnailURL)
+                // Radius lives on the UIImageView layer so it survives the
+                // async image swap on iOS 14 (SwiftUI's cornerRadius mask is
+                // dropped when the placeholder branch is replaced).
+                RoundedThumbnail(url: video.thumbnailURL, radius: 14)
                     .frame(maxWidth: .infinity)
                     .aspectRatio(16 / 9, contentMode: .fit)
-                    .clipped().cornerRadius(14)
                 if let duration = video.duration {
                     Text(duration).font(.system(size: 11, weight: .semibold)).foregroundColor(.white)
                         .padding(.horizontal, 5).padding(.vertical, 2)

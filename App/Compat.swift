@@ -157,6 +157,69 @@ struct RemoteThumbnail: View {
     }
 }
 
+/// iOS 14-safe rounded thumbnail for feed cards.
+///
+/// SwiftUI's `.cornerRadius` mask is discarded on iOS 14 when RemoteThumbnail
+/// swaps its placeholder branch for the decoded image — the first render is
+/// rounded, the refreshed one turns square. Keeping the radius on the backing
+/// UIImageView's layer (same approach as Opaline's VideoCell) survives any
+/// content refresh. A process-wide cache avoids re-downloading on re-render.
+struct RoundedThumbnail: UIViewRepresentable {
+    let url: URL
+    let radius: CGFloat
+
+    private static let imageCache = NSCache<NSURL, UIImage>()
+
+    func makeUIView(context: Context) -> UIImageView {
+        let view = UIImageView()
+        view.contentMode = .scaleAspectFill
+        view.clipsToBounds = true
+        view.backgroundColor = UIColor.secondarySystemFill
+        view.layer.cornerRadius = radius
+        view.layer.masksToBounds = true
+        view.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        view.setContentHuggingPriority(.defaultLow, for: .vertical)
+        return view
+    }
+
+    func updateUIView(_ uiView: UIImageView, context: Context) {
+        uiView.layer.cornerRadius = radius
+        context.coordinator.load(url, into: uiView)
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    final class Coordinator {
+        private var task: URLSessionTask?
+        private var currentURL: URL?
+
+        func load(_ url: URL, into view: UIImageView) {
+            guard currentURL != url else { return }
+            currentURL = url
+            task?.cancel()
+
+            let key = url as NSURL
+            if let cached = RoundedThumbnail.imageCache.object(forKey: key) {
+                view.image = cached
+                return
+            }
+            view.image = nil
+            task = URLSession.shared.dataTask(with: url) { data, _, _ in
+                guard let data = data, let image = UIImage(data: data) else { return }
+                RoundedThumbnail.imageCache.setObject(image, forKey: key)
+                DispatchQueue.main.async {
+                    // Only apply if this view is still showing the same URL.
+                    guard self.currentURL == url else { return }
+                    view.image = image
+                }
+            }
+            task?.resume()
+        }
+
+        deinit { task?.cancel() }
+    }
+}
+
 struct ShareButton: View {
     let url: URL
 
