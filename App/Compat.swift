@@ -157,6 +157,15 @@ struct RemoteThumbnail: View {
     }
 }
 
+/// UIImageView that reports no intrinsic size, so SwiftUI's `.frame` +
+/// `.aspectRatio` fully control its bounds inside a LazyVGrid cell. Without
+/// this, a loaded image's natural size inflates the cell and overlaps rows.
+private final class GridThumbnailImageView: UIImageView {
+    override var intrinsicContentSize: CGSize {
+        CGSize(width: UIView.noIntrinsicMetric, height: UIView.noIntrinsicMetric)
+    }
+}
+
 /// iOS 14-safe rounded thumbnail for feed cards.
 ///
 /// SwiftUI's `.cornerRadius` mask is discarded on iOS 14 when RemoteThumbnail
@@ -170,8 +179,8 @@ struct RoundedThumbnail: UIViewRepresentable {
 
     private static let imageCache = NSCache<NSURL, UIImage>()
 
-    func makeUIView(context: Context) -> UIImageView {
-        let view = UIImageView()
+    func makeUIView(context: Context) -> GridThumbnailImageView {
+        let view = GridThumbnailImageView()
         view.contentMode = .scaleAspectFill
         view.clipsToBounds = true
         view.backgroundColor = UIColor.secondarySystemFill
@@ -179,11 +188,14 @@ struct RoundedThumbnail: UIViewRepresentable {
         view.layer.masksToBounds = true
         view.setContentHuggingPriority(.defaultLow, for: .horizontal)
         view.setContentHuggingPriority(.defaultLow, for: .vertical)
+        view.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        view.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
         return view
     }
 
-    func updateUIView(_ uiView: UIImageView, context: Context) {
+    func updateUIView(_ uiView: GridThumbnailImageView, context: Context) {
         uiView.layer.cornerRadius = radius
+        uiView.layer.masksToBounds = true
         context.coordinator.load(url, into: uiView)
     }
 
